@@ -34,16 +34,42 @@ public actor ItoRunner {
 
     private let executionQueue = DispatchQueue(label: "moe.itoapp.runner.execution")
 
+    /// How long host work (network, web view) may block a plugin call. Applies to plugins loaded
+    /// after it is set.
+    public private(set) var hostCallTimeouts = HostCallTimeouts()
+
+    /// Runs one job on the runner's queue, one at a time. Cancelling the caller's task skips the job
+    /// if it hasn't started, and cancels host work it is waiting on if it has; either way the caller
+    /// gets `CancellationError`, never the failure the cancellation caused in the plugin.
     private func performSerialized<T>(_ operation: @escaping () throws -> T) async throws -> T {
-        return try await withCheckedThrowingContinuation { continuation in
-            executionQueue.async {
-                do {
-                    let result = try operation()
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
+        try Task.checkCancellation()
+        let token = CallToken()
+        // Read on the actor: the queue never touches runner state after resuming the caller.
+        let bridge = self.bridge
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                executionQueue.async {
+                    guard !token.isCancelled else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    bridge?.activeCallToken = token
+                    do {
+                        let result = try operation()
+                        bridge?.activeCallToken = nil
+                        if token.isCancelled {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            continuation.resume(returning: result)
+                        }
+                    } catch {
+                        bridge?.activeCallToken = nil
+                        continuation.resume(throwing: token.isCancelled ? CancellationError() : error)
+                    }
                 }
             }
+        } onCancel: {
+            token.cancel()
         }
     }
 
@@ -60,6 +86,11 @@ public actor ItoRunner {
     public func setEnvModule(_ module: EnvModule) { self.envModule = module }
     public func setUiModule(_ module: UiModule) { self.uiModule = module }
     public func setWebviewModule(_ module: WebviewModule) { self.webviewModule = module }
+
+    /// Sets how long host work may block a plugin call, for plugins loaded afterwards.
+    public func setHostCallTimeouts(_ timeouts: HostCallTimeouts) {
+        hostCallTimeouts = timeouts
+    }
 
     /// Loads a `.wasm` file, sets up the host environment (FFI), and instantiates the plugin.
     ///
@@ -90,6 +121,7 @@ public actor ItoRunner {
             bridge.envModule = self.envModule
             bridge.uiModule = self.uiModule
             bridge.webviewModule = self.webviewModule
+            bridge.timeouts = self.hostCallTimeouts
             let imports = bridge.buildImports(store: store)
 
             // Clear any lingering state from previous runs

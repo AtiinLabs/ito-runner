@@ -23,6 +23,10 @@ public class WasmBridge {
     /// The export currently running, and the reason it reported for a failure.
     private var currentExport: String?
     private var reportedFailure: String?
+    /// Cancellation of the job currently running, so host work it waits on can be cancelled.
+    var activeCallToken: CallToken?
+    /// How long host work may block a plugin call.
+    var timeouts = HostCallTimeouts()
 
     public init(runner: ItoRunner) {
         self.runner = runner
@@ -102,6 +106,64 @@ public class WasmBridge {
         return .hostModuleError(domain: "webview", message: error.localizedDescription)
     }
 
+    /// Runs a plugin's network request on the net module and waits for it. A failure, a
+    /// cancelled call or a request past the watchdog deadline reaches the plugin as a 500
+    /// response it handles like any server error, so its export finishes normally.
+    func fetchForPlugin(_ request: NetRequest, options: NetOptions?, label: String) -> NetResponse {
+        let module = netModule
+        let outcome = waitForHostWork(timeout: timeouts.net) { () async throws -> NetResponse in
+            guard let module else {
+                throw ItoError.hostModuleError(domain: "net", message: "NetModule not provided")
+            }
+            if let options {
+                return try await module.fetch(request: request, options: options)
+            }
+            return try await module.fetch(request: request)
+        }
+        let failure: String
+        switch outcome {
+        case .completed(let response):
+            return response
+        case .failed(let error):
+            failure = error.localizedDescription
+        case .cancelled:
+            failure = "The request was cancelled."
+        case .timedOut:
+            failure = "The request timed out."
+        }
+        return NetResponse(
+            status: 500,
+            headers: ["Content-Type": "text/plain"],
+            body: Array("FFI Error in \(label): \(failure)".utf8)
+        )
+    }
+
+    /// Runs a web view operation and waits for it. Returns nil when the call was cancelled: the
+    /// plugin then gets an empty result it handles as an error and unwinds normally, where a
+    /// thrown error would abort it mid-call. Throws on failure or timeout.
+    func webviewForPlugin<Value: Sendable>(
+        _ work: @escaping @Sendable (any WebviewModule) async throws -> Value
+    ) throws -> Value? {
+        let module = webviewModule
+        let outcome = waitForHostWork(timeout: timeouts.webview) { () async throws -> Value in
+            guard let module else {
+                throw ItoError.hostModuleError(domain: "webview", message: "WebviewModule not provided")
+            }
+            return try await work(module)
+        }
+        switch outcome {
+        case .completed(let value):
+            return value
+        case .failed(let error):
+            RunnerLogger.bridge.error("WasmBridge: webview call failed: \(error.localizedDescription)")
+            throw Self.webviewError(error)
+        case .cancelled:
+            return nil
+        case .timedOut:
+            throw ItoError.hostModuleError(domain: "webview", message: "The page took too long to respond.")
+        }
+    }
+
     // MARK: - Imports Registration
 
     /// Builds the host functions that the WebAssembly plugin can import.
@@ -123,50 +185,19 @@ public class WasmBridge {
                 Array(buffer)
             }
 
+            let request: NetRequest
             do {
-                let request = try self.runner.postcardDecoder.decode(
-                    NetRequest.self, from: requestBytes)
-
-                class ResultBox: @unchecked Sendable {
-                    var response: NetResponse?
-                    var error: Error?
-                }
-
-                let box = ResultBox()
-                let module = self.netModule
-                let sem = DispatchSemaphore(value: 0)
-
-                Task {
-                    do {
-                        if let module = module {
-                            box.response = try await module.fetch(request: request)
-                        } else {
-                            throw ItoError.hostModuleError(
-                                domain: "net", message: "NetModule not provided")
-                        }
-                    } catch {
-                        box.error = error
-                    }
-                    sem.signal()
-                }
-                sem.wait()
-
-                let response: NetResponse
-                if let error = box.error {
-                    let errMsg = "FFI Error in net_fetch: \(error.localizedDescription)"
-                    response = NetResponse(
-                        status: 500,
-                        headers: ["Content-Type": "text/plain"],
-                        body: Array(errMsg.utf8)
-                    )
-                } else {
-                    response = box.response!
-                }
+                request = try self.runner.postcardDecoder.decode(NetRequest.self, from: requestBytes)
+            } catch {
+                throw ItoError.wasmTrap("Failed to decode NetRequest: \(error)")
+            }
+            let response = self.fetchForPlugin(request, options: nil, label: "net_fetch")
+            do {
                 let responseBytes = try self.runner.postcardEncoder.encode(response)
                 self.pendingNetResponseBytes = responseBytes
                 return [.i32(UInt32(responseBytes.count))]
             } catch {
-                throw ItoError.wasmTrap("Failed to decode NetRequest or serialize NetResponse: \(error)")
+                throw ItoError.wasmTrap("Failed to serialize NetResponse: \(error)")
             }
         }
 
@@ -190,53 +221,21 @@ public class WasmBridge {
                 offset: UInt(optPtr), count: Int(optLen)
             ) { buffer in Array(buffer) }
 
+            let request: NetRequest
+            let options: NetOptions
             do {
-                let request = try self.runner.postcardDecoder.decode(
-                    NetRequest.self, from: requestBytes)
-
-                let options = try self.runner.postcardDecoder.decode(
-                    NetOptions.self, from: optBytes)
-
-                class ResultBox: @unchecked Sendable {
-                    var response: NetResponse?
-                    var error: Error?
-                }
-
-                let box = ResultBox()
-                let module = self.netModule
-                let sem = DispatchSemaphore(value: 0)
-
-                Task {
-                    do {
-                        if let module = module {
-                            box.response = try await module.fetch(request: request, options: options)
-                        } else {
-                            throw ItoError.hostModuleError(
-                                domain: "net", message: "NetModule not provided")
-                        }
-                    } catch {
-                        box.error = error
-                    }
-                    sem.signal()
-                }
-                sem.wait()
-
-                let response: NetResponse
-                if let error = box.error {
-                    let errMsg = "FFI Error in net_fetch_v2: \(error.localizedDescription)"
-                    response = NetResponse(
-                        status: 500,
-                        headers: ["Content-Type": "text/plain"],
-                        body: Array(errMsg.utf8)
-                    )
-                } else {
-                    response = box.response!
-                }
+                request = try self.runner.postcardDecoder.decode(NetRequest.self, from: requestBytes)
+                options = try self.runner.postcardDecoder.decode(NetOptions.self, from: optBytes)
+            } catch {
+                throw ItoError.wasmTrap("Failed to decode NetRequest: \(error)")
+            }
+            let response = self.fetchForPlugin(request, options: options, label: "net_fetch_v2")
+            do {
                 let responseBytes = try self.runner.postcardEncoder.encode(response)
                 self.pendingNetResponseBytes = responseBytes
                 return [.i32(UInt32(responseBytes.count))]
             } catch {
-                throw ItoError.wasmTrap("Failed to decode NetRequest or serialize NetResponse: \(error)")
+                throw ItoError.wasmTrap("Failed to serialize NetResponse: \(error)")
             }
         }
 
@@ -753,35 +752,10 @@ public class WasmBridge {
                 throw ItoError.wasmTrap("Failed to decode WebviewRequest: \(error)")
             }
 
-            class ResultBox: @unchecked Sendable {
-                var response: WebviewResponse?
-                var error: Error?
-            }
-
-            let box = ResultBox()
-            let module = self.webviewModule
-            let sem = DispatchSemaphore(value: 0)
-
-            Task {
-                do {
-                    if let module = module {
-                        box.response = try await module.loadUrl(request: request)
-                    } else {
-                        throw ItoError.hostModuleError(domain: "webview", message: "WebviewModule not provided")
-                    }
-                } catch {
-                    box.error = error
-                }
-                sem.signal()
-            }
-            sem.wait()
-
-            if let error = box.error {
-                RunnerLogger.bridge.error("WasmBridge: webviewLoadUrl failed: \(error.localizedDescription)")
-                throw Self.webviewError(error)
-            }
-
-            let responseBytes = try self.runner.postcardEncoder.encode(box.response!)
+            guard let response = try self.webviewForPlugin({ module in
+                try await module.loadUrl(request: request)
+            }) else { return [.i32(0)] }
+            let responseBytes = try self.runner.postcardEncoder.encode(response)
             self.pendingWebviewResponseBytes = responseBytes
             return [.i32(UInt32(responseBytes.count))]
         }
@@ -800,35 +774,10 @@ public class WasmBridge {
                 offset: UInt(requestPtr), count: Int(requestLen)
             ) { buffer in String(decoding: buffer, as: UTF8.self) }
 
-            class ResultBox: @unchecked Sendable {
-                var response: String?
-                var error: Error?
-            }
-
-            let box = ResultBox()
-            let module = self.webviewModule
-            let sem = DispatchSemaphore(value: 0)
-
-            Task {
-                do {
-                    if let module = module {
-                        box.response = try await module.executeJs(script: scriptString)
-                    } else {
-                        throw ItoError.hostModuleError(domain: "webview", message: "WebviewModule not provided")
-                    }
-                } catch {
-                    box.error = error
-                }
-                sem.signal()
-            }
-            sem.wait()
-
-            if let error = box.error {
-                RunnerLogger.bridge.error("WasmBridge: webviewExecuteJs failed: \(error.localizedDescription)")
-                throw Self.webviewError(error)
-            }
-
-            let responseBytes = Array(box.response!.utf8)
+            guard let result = try self.webviewForPlugin({ module in
+                try await module.executeJs(script: scriptString)
+            }) else { return [.i32(0)] }
+            let responseBytes = Array(result.utf8)
             self.pendingWebviewResponseBytes = responseBytes
             return [.i32(UInt32(responseBytes.count))]
         }
