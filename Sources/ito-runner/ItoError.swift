@@ -25,8 +25,8 @@ public enum ItoError: LocalizedError, Equatable {
     /// (e.g. "Host error: Add your server URL"), or nil when it gave none.
     case pluginFailed(function: String, reason: String?)
 
-    /// The plugin imports host functions this runner doesn't provide, so it was built for a newer
-    /// host. `missingImports` names them as "module.name".
+    /// The plugin imports what this runner doesn't provide (a host function it lacks, or one with
+    /// a different signature), so it was built for a newer host. Named as "module.name".
     case requiresNewerHost(missingImports: [String])
 
     /// The plugin was built for an ABI version (`ito_abi_version`) this runner doesn't support.
@@ -50,9 +50,12 @@ public enum ItoError: LocalizedError, Equatable {
         case .pluginFailed(let function, let reason):
             return reason ?? "The plugin couldn't complete \(function)."
         case .requiresNewerHost(let missingImports):
-            return "The plugin needs host functions this version doesn't provide: \(missingImports.joined(separator: ", "))"
+            return "The plugin needs host imports this version doesn't provide: \(missingImports.joined(separator: ", "))"
         case .unsupportedABI(let version, let supported):
-            return "The plugin was built for ABI \(version); this version supports \(supported.lowerBound)–\(supported.upperBound)."
+            let versions = supported.count == 1
+                ? "ABI \(supported.lowerBound)"
+                : "ABI \(supported.lowerBound)–\(supported.upperBound)"
+            return "The plugin was built for ABI \(version); this version supports \(versions)."
         }
     }
 

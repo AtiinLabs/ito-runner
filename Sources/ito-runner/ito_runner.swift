@@ -110,6 +110,17 @@ public actor ItoRunner {
         .buildImportTable(store: Store(engine: Engine()))
         .mapValues { Set($0.keys) }
 
+    /// The entries of `imports` ("module.name", as a plugin's manifest lists them) this runner
+    /// doesn't provide. Lets a host refuse a plugin before downloading it.
+    public static func unsupportedImports(_ imports: [String]) -> [String] {
+        imports.filter { entry in
+            guard let dot = entry.lastIndex(of: ".") else { return true }
+            let module = String(entry[..<dot])
+            let name = String(entry[entry.index(after: dot)...])
+            return supportedImports[module]?.contains(name) != true
+        }
+    }
+
     /// Loads a plugin directly from a WebAssembly byte array. A plugin that imports host functions
     /// this runner lacks, or was built for an unsupported ABI, is refused before it can run.
     public func loadPlugin(fromBytes wasmBytes: [UInt8]) throws {
@@ -135,34 +146,34 @@ public actor ItoRunner {
             let importTable = bridge.buildImportTable(store: store)
 
             // Instantiating would fail on the first missing import with an error that can't be
-            // told apart from a crash; name every missing one instead.
-            let missingImports = module.imports
-                .filter { importTable[$0.module]?[$0.name] == nil }
-                .map { "\($0.module).\($0.name)" }
+            // told apart from a crash; name every one that isn't a host function of that type.
+            let missingImports = Set(module.imports.filter { item in
+                guard case .function(let typeIndex) = item.descriptor,
+                      let hostFunction = importTable[item.module]?[item.name],
+                      module.types.indices.contains(Int(typeIndex)) else { return true }
+                return module.types[Int(typeIndex)] != hostFunction.type
+            }.map { "\($0.module).\($0.name)" })
             guard missingImports.isEmpty else {
                 throw ItoError.requiresNewerHost(missingImports: missingImports.sorted())
             }
             let imports = WasmBridge.imports(from: importTable)
 
-            // Clear any lingering state from previous runs
-            bridge.htmlModule?.clear()
-
-            // 4. Instantiate the plugin, and keep it only if its ABI is supported.
+            // 4. Instantiate the plugin, and keep it only if its ABI is supported and it exports
+            // its memory. Nothing of a previously loaded plugin is touched until then.
             let instance = try module.instantiate(store: store, imports: imports)
             let abi = try Self.abiVersion(of: instance)
             guard Self.supportedABIVersions.contains(abi) else {
                 throw ItoError.unsupportedABI(version: abi, supported: Self.supportedABIVersions)
             }
-            self.instance = instance
-            self.bridge = bridge
-            // 5. Store a reference to the Wasm linear memory.
-            guard let exportedMemory = self.instance?.exports["memory"],
-                case .memory(let mem) = exportedMemory
-            else {
+            guard case .memory(let memory)? = instance.exports["memory"] else {
                 throw ItoError.wasmTrap("Plugin did not export linear 'memory'.")
             }
 
-            self.memory = mem
+            // Clear any lingering state from previous runs
+            bridge.htmlModule?.clear()
+            self.instance = instance
+            self.bridge = bridge
+            self.memory = memory
 
         } catch let error as ItoError {
             throw error

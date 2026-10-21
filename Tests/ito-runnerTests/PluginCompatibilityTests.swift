@@ -20,18 +20,27 @@ struct PluginCompatibilityTests {
             """)
     }
 
-    @Test func aPluginImportingHostFunctionsThisHostLacksIsRefusedNamingThem() async throws {
+    @Test func aPluginImportingWhatThisHostLacksIsRefusedNamingIt() async throws {
         let wasm = try plugin("""
             (import "ito:core/net" "fetch_v9" (func (param i32 i32) (result i32)))
+            (import "ito:core/net" "fetch_v9" (func (param i32 i32) (result i32)))
             (import "ito:core/net" "fetch_v2" (func (param i32 i32 i32 i32) (result i32)))
+            (import "ito:core/std" "print" (func (param i32) (result i32)))
             (import "wasi_snapshot_preview1" "fd_write" (func (param i32 i32 i32 i32) (result i32)))
             """)
 
+        // A missing function, one with a different signature, and an unknown module, each once.
         await #expect(throws: ItoError.requiresNewerHost(missingImports: [
-            "ito:core/net.fetch_v9", "wasi_snapshot_preview1.fd_write"
+            "ito:core/net.fetch_v9", "ito:core/std.print", "wasi_snapshot_preview1.fd_write"
         ])) {
             try await ItoRunner().loadPlugin(fromBytes: wasm)
         }
+    }
+
+    @Test func importsListedInAManifestAreCheckedBeforeDownloading() {
+        #expect(ItoRunner.unsupportedImports([
+            "ito:core/net.fetch_v2", "ito:core/net.fetch_v9", "ito:core/html.parse", "wasi.fd_write", "nodot"
+        ]) == ["ito:core/net.fetch_v9", "wasi.fd_write", "nodot"])
     }
 
     @Test func aPluginBuiltForANewerABIIsRefused() async throws {
