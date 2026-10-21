@@ -166,8 +166,24 @@ public class WasmBridge {
 
     // MARK: - Imports Registration
 
-    /// Builds the host functions that the WebAssembly plugin can import.
+    /// The host functions a plugin can import.
     public func buildImports(store: Store) -> Imports {
+        Self.imports(from: buildImportTable(store: store))
+    }
+
+    static func imports(from table: [String: [String: Function]]) -> Imports {
+        var imports = Imports()
+        for (module, functions) in table {
+            for (name, function) in functions {
+                imports.define(module: module, name: name, function)
+            }
+        }
+        return imports
+    }
+
+    /// The host functions a plugin can import, by module and name. The one list of what this
+    /// host provides: imports are built from it and plugins are checked against it.
+    func buildImportTable(store: Store) -> [String: [String: Function]] {
         // --- ito:core/net ---
         let netFetch = Function(store: store, parameters: [.i32, .i32], results: [.i32]) {
             [weak self] caller, args in
@@ -802,7 +818,7 @@ public class WasmBridge {
             return []
         }
 
-        let imports: Imports = [
+        return [
             "ito:core/net": [
                 "fetch": netFetch,
                 "fetch_v2": netFetchV2,
@@ -837,7 +853,5 @@ public class WasmBridge {
                 "webview_read_result": webviewReadResult
             ]
         ]
-
-        return imports
     }
 }

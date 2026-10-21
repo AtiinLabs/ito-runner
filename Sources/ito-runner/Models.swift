@@ -67,13 +67,21 @@ public struct PluginInfo: Codable, Sendable {
     public let archived: Bool?
     public let archivedReason: String?
     public let archivedDate: String?
+    /// The ABI version the plugin was built for (`ito_abi_version`), as its packager recorded it.
+    public let abi: Int?
+    /// The SDK the plugin was built with, such as "ito-rs 0.1.0".
+    public let sdk: String?
+    /// The host functions the plugin imports, as "module.name" (e.g. "ito:core/net.fetch_v2"), as
+    /// its packager read them. Lets a host refuse a plugin it can't run before downloading it.
+    public let imports: [String]?
 
     public init(
         id: String, name: String, version: String, minAppVersion: String, url: String? = nil,
         sourceUrl: String? = nil, contentRating: ContentRating? = nil,
         nsfw: Int? = nil, language: String? = nil, languages: [String]? = nil,
         type: PluginType = .manga, author: String? = nil, description: String? = nil, tags: [String]? = nil,
-        archived: Bool? = nil, archivedReason: String? = nil, archivedDate: String? = nil
+        archived: Bool? = nil, archivedReason: String? = nil, archivedDate: String? = nil,
+        abi: Int? = nil, sdk: String? = nil, imports: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -92,10 +100,13 @@ public struct PluginInfo: Codable, Sendable {
         self.archived = archived
         self.archivedReason = archivedReason
         self.archivedDate = archivedDate
+        self.abi = abi
+        self.sdk = sdk
+        self.imports = imports
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, version, minAppVersion = "min_app_version", url, sourceUrl, contentRating, nsfw, language, languages, type, author, description, tags, archived, archivedReason = "archived_reason", archivedDate = "archived_date"
+        case id, name, version, minAppVersion = "min_app_version", url, sourceUrl, contentRating, nsfw, language, languages, type, author, description, tags, archived, archivedReason = "archived_reason", archivedDate = "archived_date", abi, sdk, imports
     }
 
     public init(from decoder: Decoder) throws {
@@ -125,6 +136,9 @@ public struct PluginInfo: Codable, Sendable {
         self.archived = try container.decodeIfPresent(Bool.self, forKey: .archived)
         self.archivedReason = try container.decodeIfPresent(String.self, forKey: .archivedReason)
         self.archivedDate = try container.decodeIfPresent(String.self, forKey: .archivedDate)
+        self.abi = try container.decodeIfPresent(Int.self, forKey: .abi)
+        self.sdk = try container.decodeIfPresent(String.self, forKey: .sdk)
+        self.imports = try container.decodeIfPresent([String].self, forKey: .imports)
     }}
 
 public enum ContentRating: Int32, Codable, Sendable, PostcardEnumMarker {

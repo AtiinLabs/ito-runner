@@ -101,7 +101,28 @@ public actor ItoRunner {
         try loadPlugin(fromBytes: [UInt8](wasmBytes))
     }
 
-    /// Loads a plugin directly from a WebAssembly byte array.
+    /// The ABI versions (`ito_abi_version`) of plugins this runner can run. A plugin without the
+    /// export was built before it existed, which is version 1.
+    public static let supportedABIVersions: ClosedRange<Int> = 1...1
+
+    /// The host functions this runner provides, by module ("ito:core/net") and name.
+    public static let supportedImports: [String: Set<String>] = WasmBridge(runner: ItoRunner())
+        .buildImportTable(store: Store(engine: Engine()))
+        .mapValues { Set($0.keys) }
+
+    /// The entries of `imports` ("module.name", as a plugin's manifest lists them) this runner
+    /// doesn't provide. Lets a host refuse a plugin before downloading it.
+    public static func unsupportedImports(_ imports: [String]) -> [String] {
+        imports.filter { entry in
+            guard let dot = entry.lastIndex(of: ".") else { return true }
+            let module = String(entry[..<dot])
+            let name = String(entry[entry.index(after: dot)...])
+            return supportedImports[module]?.contains(name) != true
+        }
+    }
+
+    /// Loads a plugin directly from a WebAssembly byte array. A plugin that imports host functions
+    /// this runner lacks, or was built for an unsupported ABI, is refused before it can run.
     public func loadPlugin(fromBytes wasmBytes: [UInt8]) throws {
         do {
             // 1. Initialize a new Wasm Engine & Store
@@ -122,29 +143,52 @@ public actor ItoRunner {
             bridge.uiModule = self.uiModule
             bridge.webviewModule = self.webviewModule
             bridge.timeouts = self.hostCallTimeouts
-            let imports = bridge.buildImports(store: store)
+            let importTable = bridge.buildImportTable(store: store)
 
-            // Clear any lingering state from previous runs
-            bridge.htmlModule?.clear()
+            // Instantiating would fail on the first missing import with an error that can't be
+            // told apart from a crash; name every one that isn't a host function of that type.
+            let missingImports = Set(module.imports.filter { item in
+                guard case .function(let typeIndex) = item.descriptor,
+                      let hostFunction = importTable[item.module]?[item.name],
+                      module.types.indices.contains(Int(typeIndex)) else { return true }
+                return module.types[Int(typeIndex)] != hostFunction.type
+            }.map { "\($0.module).\($0.name)" })
+            guard missingImports.isEmpty else {
+                throw ItoError.requiresNewerHost(missingImports: missingImports.sorted())
+            }
+            let imports = WasmBridge.imports(from: importTable)
 
-            // 4. Instantiate the plugin.
-            self.instance = try module.instantiate(store: store, imports: imports)
-            self.bridge = bridge
-
-            // 5. Store a reference to the Wasm linear memory.
-            guard let exportedMemory = self.instance?.exports["memory"],
-                case .memory(let mem) = exportedMemory
-            else {
+            // 4. Instantiate the plugin, and keep it only if its ABI is supported and it exports
+            // its memory. Nothing of a previously loaded plugin is touched until then.
+            let instance = try module.instantiate(store: store, imports: imports)
+            let abi = try Self.abiVersion(of: instance)
+            guard Self.supportedABIVersions.contains(abi) else {
+                throw ItoError.unsupportedABI(version: abi, supported: Self.supportedABIVersions)
+            }
+            guard case .memory(let memory)? = instance.exports["memory"] else {
                 throw ItoError.wasmTrap("Plugin did not export linear 'memory'.")
             }
 
-            self.memory = mem
+            // Clear any lingering state from previous runs
+            bridge.htmlModule?.clear()
+            self.instance = instance
+            self.bridge = bridge
+            self.memory = memory
 
         } catch let error as ItoError {
             throw error
         } catch {
             throw ItoError.wasmTrap("Failed to load Wasm plugin: \(error.localizedDescription)")
         }
+    }
+
+    /// The ABI version `instance` was built for: its `ito_abi_version` export, or 1 without one.
+    private static func abiVersion(of instance: Instance) throws -> Int {
+        guard case .function(let function)? = instance.exports["ito_abi_version"] else { return 1 }
+        guard case .i32(let version)? = try function([]).first else {
+            throw ItoError.wasmTrap("ito_abi_version must return an i32")
+        }
+        return Int(version)
     }
 
     /// Loads a packaged `.ito` bundle, extracting the wasm logic and returning the manifest.

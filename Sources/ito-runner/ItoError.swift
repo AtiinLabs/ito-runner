@@ -25,6 +25,13 @@ public enum ItoError: LocalizedError, Equatable {
     /// (e.g. "Host error: Add your server URL"), or nil when it gave none.
     case pluginFailed(function: String, reason: String?)
 
+    /// The plugin imports what this runner doesn't provide (a host function it lacks, or one with
+    /// a different signature), so it was built for a newer host. Named as "module.name".
+    case requiresNewerHost(missingImports: [String])
+
+    /// The plugin was built for an ABI version (`ito_abi_version`) this runner doesn't support.
+    case unsupportedABI(version: Int, supported: ClosedRange<Int>)
+
     public var errorDescription: String? {
         switch self {
         case .wasmTrap(let reason):
@@ -42,6 +49,13 @@ public enum ItoError: LocalizedError, Equatable {
             return "Host module '\(domain)' encountered an error: \(message)"
         case .pluginFailed(let function, let reason):
             return reason ?? "The plugin couldn't complete \(function)."
+        case .requiresNewerHost(let missingImports):
+            return "The plugin needs host imports this version doesn't provide: \(missingImports.joined(separator: ", "))"
+        case .unsupportedABI(let version, let supported):
+            let versions = supported.count == 1
+                ? "ABI \(supported.lowerBound)"
+                : "ABI \(supported.lowerBound)–\(supported.upperBound)"
+            return "The plugin was built for ABI \(version); this version supports \(versions)."
         }
     }
 
@@ -58,6 +72,9 @@ public enum ItoError: LocalizedError, Equatable {
         case (.hostModuleError(let l1, let l2), .hostModuleError(let r1, let r2)):
             return l1 == r1 && l2 == r2
         case (.pluginFailed(let l1, let l2), .pluginFailed(let r1, let r2)):
+            return l1 == r1 && l2 == r2
+        case (.requiresNewerHost(let l), .requiresNewerHost(let r)): return l == r
+        case (.unsupportedABI(let l1, let l2), .unsupportedABI(let r1, let r2)):
             return l1 == r1 && l2 == r2
         default: return false
         }
