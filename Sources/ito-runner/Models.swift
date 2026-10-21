@@ -38,11 +38,14 @@ public enum Setting: Codable, Sendable, PostcardEnumMarker {
     case toggle(id: String, name: String, summary: String?, defaultValue: Bool)
     case text(id: String, name: String, summary: String?, defaultValue: String)
     case picker(id: String, name: String, summary: String?, options: [String], defaultValue: String)
+    /// A credential. Hosts keep it out of plain storage and backups and never display it.
+    case secret(id: String, name: String, summary: String?)
 
     enum CodingKeys: Int, CodingKey, PostcardEnumKeys {
         case toggle = 0
         case text = 1
         case picker = 2
+        case secret = 3
     }
 }
 
