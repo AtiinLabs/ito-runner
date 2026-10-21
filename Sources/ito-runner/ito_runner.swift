@@ -297,7 +297,7 @@ public actor ItoRunner {
             }
         }
 
-        bridge?.beginCall()
+        bridge?.beginCall(name)
         let result = try executeExport(name, args: values)
         guard let resultValue = result.first, case .i64(let packed) = resultValue else {
             throw ItoError.wasmTrap("Expected i64 packed pointer response from \(name)")
@@ -331,12 +331,13 @@ public actor ItoRunner {
         return try postcardDecoder.decode(T.self, from: bytes)
     }
 
-    /// Runs an export where a 0 return also means "nothing": nil unless the plugin reported a failure.
+    /// Runs an export where a 0 return also means "nothing": nil when the plugin reported no failure
+    /// or reported it doesn't support the request, which is how the SDK says "not handled".
     private func callOptional(_ name: String, _ arguments: [ExportArgument] = []) throws -> [UInt8]? {
         if let bytes = try callPacked(name, arguments) {
             return bytes
         }
-        if let reason = bridge?.takeReportedFailure() {
+        if let reason = bridge?.takeReportedFailure(), reason != WasmBridge.unsupportedReason {
             throw ItoError.pluginFailed(function: name, reason: reason)
         }
         return nil
@@ -356,7 +357,7 @@ public actor ItoRunner {
         return try await performSerialized {
             guard self.isExported("get_home_stream") else { return false }
 
-            self.bridge?.beginCall()
+            self.bridge?.beginCall("get_home_stream")
             let result = try self.executeExport("get_home_stream")
             guard let resultVal = result.first, case .i32(let ret) = resultVal else {
                 throw ItoError.wasmTrap("Expected i32 response from get_home_stream")

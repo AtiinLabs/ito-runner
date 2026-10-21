@@ -20,7 +20,8 @@ public class WasmBridge {
 
     private var pendingNetResponseBytes: [UInt8]?
     private var pendingWebviewResponseBytes: [UInt8]?
-    /// The reason the plugin printed for a failure during the current export call.
+    /// The export currently running, and the reason it reported for a failure.
+    private var currentExport: String?
     private var reportedFailure: String?
 
     public init(runner: ItoRunner) {
@@ -52,24 +53,43 @@ public class WasmBridge {
         return Int64(bitPattern: packed)
     }
 
-    /// Starts tracking the failure the plugin reports during one export call.
-    func beginCall() {
+    /// What the SDK prints for `Error::Unsupported`. An optional export (`handle_url`, `handle_image`)
+    /// reporting it means "not handled", not a failure.
+    static let unsupportedReason = "Unsupported operation"
+
+    /// Starts tracking the failure the plugin reports while running `export`.
+    func beginCall(_ export: String) {
+        currentExport = export
         reportedFailure = nil
     }
 
-    /// The failure the plugin reported since `beginCall()`, if any. Clears it.
+    /// The failure the plugin reported since `beginCall(_:)`, if any. Clears it.
     func takeReportedFailure() -> String? {
         defer { reportedFailure = nil }
         return reportedFailure
     }
 
-    /// The reason in a line the SDK prints before an export returns 0: "Error in <export>: <reason>"
-    /// for a failed call, "Serialization error: <reason>" for a result it could not encode.
-    static func failureReason(printed message: String) -> String? {
-        if message.hasPrefix("Error in "), let separator = message.range(of: ": ") {
-            return String(message[separator.upperBound...])
+    /// The SDK prints its failure line right before an export returns 0, so the last print of a
+    /// call decides: an SDK failure line for the running export sets the reason, anything else
+    /// (the plugin's own logging) clears it.
+    private func recordPrint(_ message: String) {
+        guard let export = currentExport else { return }
+        reportedFailure = Self.failureReason(printed: message, export: export)
+    }
+
+    /// The reason in a line the SDK prints before `export` returns 0:
+    /// - "Error in <export>: <reason>" for a failed call (the reason is returned);
+    /// - "Deserialization error: …", "Postcard decoding error in <export>: …" when the plugin
+    ///   couldn't read its arguments, "Serialization error: …" when it couldn't encode its result
+    ///   (the whole line is returned).
+    static func failureReason(printed message: String, export: String) -> String? {
+        let failurePrefix = "Error in \(export): "
+        if message.hasPrefix(failurePrefix) {
+            return String(message.dropFirst(failurePrefix.count))
         }
-        if message.hasPrefix("Serialization error: ") {
+        if message.hasPrefix("Deserialization error: ")
+            || message.hasPrefix("Serialization error: ")
+            || message.hasPrefix("Postcard decoding error in \(export): ") {
             return message
         }
         return nil
@@ -539,9 +559,7 @@ public class WasmBridge {
                 String(decoding: buffer, as: UTF8.self)
             }
 
-            if let reason = Self.failureReason(printed: string) {
-                self.reportedFailure = reason
-            }
+            self.recordPrint(string)
 
             guard let module = self.stdModule else {
                 throw ItoError.hostModuleError(domain: "std", message: "StdModule not provided")

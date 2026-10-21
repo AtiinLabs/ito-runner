@@ -7,19 +7,30 @@ import WasmKit
 
 @Suite("Plugin failures")
 struct PluginFailureTests {
-    private static let homeFailure = "Error in get_home: Host error: Add your server URL"
-    private static let imageFailure = "Error in handle_image: Host error: Refused path"
+    /// Lines the plugin prints, placed in its memory at these offsets.
+    private static let lines: [(offset: Int, text: String)] = [
+        (16, "Error in get_home: Host error: Add your server URL"),
+        (128, "Error in handle_image: Host error: Refused path"),
+        (256, "Error in handle_url: Unsupported operation"),
+        (384, "Error in parse: no title on the page"),
+        (512, "Deserialization error: unexpected end of input"),
+        (640, "Error in get_home_stream: Host error: Stream failed")
+    ]
 
-    /// A plugin shaped like the SDK's exports: failures print "Error in <export>: <reason>" and
-    /// return 0; "nothing" (no settings, unsupported image or URL) returns 0 without printing.
+    private static func printCall(_ index: Int) -> String {
+        "i32.const \(lines[index].offset)\ni32.const \(lines[index].text.utf8.count)\ncall $print"
+    }
+
+    /// A plugin shaped like the SDK's exports: failures print "Error in <export>: <reason>" (or a
+    /// decoding error) and return 0; "nothing" returns 0, possibly after the plugin's own logging.
     private static let pluginWAT = """
         (module
             (import "ito:core/std" "print" (func $print (param i32 i32)))
             (memory (export "memory") 1)
-            (data (i32.const 16) "\(homeFailure)")
-            (data (i32.const 256) "\(imageFailure)")
-            (data (i32.const 512) "\\00\\00")
+            \(lines.map { "(data (i32.const \($0.offset)) \"\($0.text)\")" }.joined(separator: "\n"))
+            (data (i32.const 900) "\\00\\00")
             (global $next (mut i32) (i32.const 1024))
+            (global $deallocs (mut i32) (i32.const 0))
             (func (export "alloc") (param $size i32) (result i32)
                 (local $pointer i32)
                 global.get $next
@@ -29,25 +40,35 @@ struct PluginFailureTests {
                 i32.add
                 global.set $next
                 local.get $pointer)
-            (func (export "dealloc") (param i32 i32))
+            (func (export "dealloc") (param i32 i32)
+                global.get $deallocs
+                i32.const 1
+                i32.add
+                global.set $deallocs)
+            (func (export "dealloc_count") (result i32)
+                global.get $deallocs)
             (func (export "get_home") (result i64)
-                i32.const 16
-                i32.const \(homeFailure.utf8.count)
-                call $print
+                \(printCall(0))
                 i64.const 0)
             (func (export "get_manga_list") (param i32 i32 i32) (result i64)
                 i64.const 0)
             (func (export "get_search_manga_list") (param i32 i32 i32 i32 i32) (result i64)
-                ;; (512 << 32) | 2: an empty PageResult (no entries, no next page)
-                i64.const 2199023255554)
-            (func (export "get_settings") (result i64)
+                ;; (900 << 32) | 2: an empty PageResult (no entries, no next page)
+                i64.const 3865470566402)
+            (func (export "get_page_list") (param i32 i32 i32 i32) (result i64)
+                \(printCall(4))
                 i64.const 0)
+            (func (export "get_settings") (result i64)
+                \(printCall(3))
+                i64.const 0)
+            (func (export "get_home_stream") (result i32)
+                \(printCall(5))
+                i32.const 0)
             (func (export "handle_url") (param i32 i32) (result i64)
+                \(printCall(2))
                 i64.const 0)
             (func (export "handle_image") (param i32 i32) (result i64)
-                i32.const 256
-                i32.const \(imageFailure.utf8.count)
-                call $print
+                \(printCall(1))
                 i64.const 0)
         )
         """
@@ -61,6 +82,14 @@ struct PluginFailureTests {
         return runner
     }
 
+    private func deallocCount(_ runner: ItoRunner) async throws -> UInt32 {
+        guard case .i32(let count) = try await runner.executeExport("dealloc_count").first else {
+            Issue.record("dealloc_count returned no i32")
+            return 0
+        }
+        return count
+    }
+
     @Test func aFailedExportReportsThePluginsReason() async throws {
         let runner = try await loadRunner()
 
@@ -71,10 +100,9 @@ struct PluginFailureTests {
 
     @Test func aFailureWithoutAReasonIsStillAFailure() async throws {
         let runner = try await loadRunner()
-        let listing = Listing(id: "all", name: "All", kind: 0)
 
         await #expect(throws: ItoError.pluginFailed(function: "get_manga_list", reason: nil)) {
-            try await runner.getMangaList(listing: listing, page: 1)
+            try await runner.getMangaList(listing: Listing(id: "all", name: "All", kind: 0), page: 1)
         }
     }
 
@@ -87,10 +115,28 @@ struct PluginFailureTests {
         }
     }
 
-    @Test func nothingToReturnIsNotAFailure() async throws {
+    @Test func aPluginThatCannotReadItsArgumentsSaysSo() async throws {
+        let runner = try await loadRunner()
+        let manga = Manga(key: "1", title: "One")
+        let chapter = Manga.Chapter(key: "c1")
+
+        await #expect(
+            throws: ItoError.pluginFailed(
+                function: "get_page_list", reason: "Deserialization error: unexpected end of input")
+        ) {
+            try await runner.getPageList(manga: manga, chapter: chapter)
+        }
+    }
+
+    @Test func thePluginsOwnLoggingIsNotAFailure() async throws {
         let runner = try await loadRunner()
 
         #expect(try await runner.getSettings() == nil)
+    }
+
+    @Test func anUnsupportedOptionalExportMeansNotHandled() async throws {
+        let runner = try await loadRunner()
+
         #expect(try await runner.handleUrl("https://example.com") == nil)
     }
 
@@ -102,13 +148,23 @@ struct PluginFailureTests {
         }
     }
 
-    @Test func aSuccessfulExportDecodesItsResult() async throws {
+    @Test func aFailedHomeStreamReportsThePluginsReason() async throws {
+        let runner = try await loadRunner()
+
+        await #expect(throws: ItoError.pluginFailed(function: "get_home_stream", reason: "Host error: Stream failed")) {
+            try await runner.getHomeStream()
+        }
+    }
+
+    @Test func aSuccessfulExportDecodesItsResultAndFreesEveryBuffer() async throws {
         let runner = try await loadRunner()
 
         let result = try await runner.getSearchMangaList(query: "query", page: 1, filters: nil)
 
         #expect(result.entries.isEmpty)
         #expect(result.hasNextPage == false)
+        // The query, the encoded filters and the response.
+        #expect(try await deallocCount(runner) == 3)
     }
 
     @Test func hostModuleErrorsReachTheCallerTyped() async throws {
@@ -127,14 +183,13 @@ struct PostcardRangeTests {
 
     @Test func anInt32OutOfRangeThrowsInsteadOfTrapping() {
         // zig-zag 2^31, one past Int32.max
-        #expect(throws: ItoError.self) {
+        #expect(throws: ItoError.postcardDecodingError("Value 2147483648 does not fit in Int32.")) {
             try ItoPostcardDecoder().decode(Int32Holder.self, from: [0x80, 0x80, 0x80, 0x80, 0x10])
         }
     }
 
     @Test func aUInt16OutOfRangeThrowsInsteadOfTrapping() {
-        // 70_000
-        #expect(throws: ItoError.self) {
+        #expect(throws: ItoError.postcardDecodingError("Value 70000 does not fit in UInt16.")) {
             try ItoPostcardDecoder().decode(UInt16Holder.self, from: [0xF0, 0xA2, 0x04])
         }
     }
@@ -142,7 +197,7 @@ struct PostcardRangeTests {
     @Test func aSequenceLengthBeyondIntThrowsInsteadOfTrapping() {
         // UInt64.max as a varint
         let length: [UInt8] = Array(repeating: 0xFF, count: 9) + [0x01]
-        #expect(throws: ItoError.self) {
+        #expect(throws: ItoError.postcardDecodingError("Value 18446744073709551615 does not fit in Int.")) {
             try ItoPostcardDecoder().decode([String].self, from: length)
         }
     }
