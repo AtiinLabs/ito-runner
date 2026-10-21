@@ -15,10 +15,10 @@ struct PluginErrorCategoryTests {
             (memory (export "memory") 1)
             (data (i32.const 16) "Error in get_home: Add your server URL")
             (data (i32.const 128) "Error in get_manga_list: Plain reason")
-            ;; {category: needsSetup (0), message: "Add your server URL"}
+            ;; {category: needsSetup (zigzag 0), message: "Add your server URL"}
             (data (i32.const 2048) "\\00\\13Add your server URL")
-            ;; {category: other (5), message: "Unsupported operation"}
-            (data (i32.const 2100) "\\05\\15Unsupported operation")
+            ;; {category: other (zigzag 10), message: "Unsupported operation"}
+            (data (i32.const 2100) "\\0a\\15Unsupported operation")
             (global $next (mut i32) (i32.const 4096))
             (global $deallocs (mut i32) (i32.const 0))
             (global $lastError (mut i64) (i64.const 0))
@@ -104,6 +104,16 @@ struct PluginErrorCategoryTests {
             function: "get_manga_list", reason: "Plain reason", category: .other
         )) {
             try await runner.getMangaList(listing: Listing(id: "all", name: "All", kind: 0), page: 1)
+        }
+    }
+
+    @Test func reportsDecodeFromTheBytesTheSDKWrites() throws {
+        // ito-rs encodes ErrorCategory as a zigzag i32 (NeedsSetup 0 … Other 5), then the message.
+        let categories: [PluginErrorCategory] = [.needsSetup, .unauthorized, .network, .server, .notFound, .other]
+        for (index, category) in categories.enumerated() {
+            let payload = try ItoPostcardDecoder().decode(PluginErrorPayload.self, from: [UInt8(index * 2), 1, 0x78])
+            #expect(payload.category == category)
+            #expect(payload.message == "x")
         }
     }
 }
