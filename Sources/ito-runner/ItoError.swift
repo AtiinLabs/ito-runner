@@ -21,6 +21,10 @@ public enum ItoError: LocalizedError, Equatable {
     /// The specific FFI or Host module threw an error
     case hostModuleError(domain: String, message: String)
 
+    /// The plugin's export reported a failure. `reason` is the text the plugin gave
+    /// (e.g. "Host error: Add your server URL"), or nil when it gave none.
+    case pluginFailed(function: String, reason: String?)
+
     public var errorDescription: String? {
         switch self {
         case .wasmTrap(let reason):
@@ -36,6 +40,8 @@ public enum ItoError: LocalizedError, Equatable {
             return "Failed to encode native object to Postcard format: \(message)"
         case .hostModuleError(let domain, let message):
             return "Host module '\(domain)' encountered an error: \(message)"
+        case .pluginFailed(let function, let reason):
+            return reason ?? "The plugin couldn't complete \(function)."
         }
     }
 
@@ -50,6 +56,8 @@ public enum ItoError: LocalizedError, Equatable {
         case (.postcardDecodingError(let l), .postcardDecodingError(let r)): return l == r
         case (.postcardEncodingError(let l), .postcardEncodingError(let r)): return l == r
         case (.hostModuleError(let l1, let l2), .hostModuleError(let r1, let r2)):
+            return l1 == r1 && l2 == r2
+        case (.pluginFailed(let l1, let l2), .pluginFailed(let r1, let r2)):
             return l1 == r1 && l2 == r2
         default: return false
         }

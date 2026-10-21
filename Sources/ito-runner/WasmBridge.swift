@@ -20,6 +20,9 @@ public class WasmBridge {
 
     private var pendingNetResponseBytes: [UInt8]?
     private var pendingWebviewResponseBytes: [UInt8]?
+    /// The export currently running, and the reason it reported for a failure.
+    private var currentExport: String?
+    private var reportedFailure: String?
 
     public init(runner: ItoRunner) {
         self.runner = runner
@@ -50,8 +53,54 @@ public class WasmBridge {
         return Int64(bitPattern: packed)
     }
 
-    /// Helper to write an empty or error response (e.g., throwing a swift error across the FFI)
-    /// We can define an error structure later, for now we let it trap or return 0.
+    /// What the SDK prints for `Error::Unsupported`. An optional export (`handle_url`, `handle_image`)
+    /// reporting it means "not handled", not a failure.
+    static let unsupportedReason = "Unsupported operation"
+
+    /// Starts tracking the failure the plugin reports while running `export`.
+    func beginCall(_ export: String) {
+        currentExport = export
+        reportedFailure = nil
+    }
+
+    /// The failure the plugin reported since `beginCall(_:)`, if any. Clears it.
+    func takeReportedFailure() -> String? {
+        defer { reportedFailure = nil }
+        return reportedFailure
+    }
+
+    /// The SDK prints its failure line right before an export returns 0, so the last print of a
+    /// call decides: an SDK failure line for the running export sets the reason, anything else
+    /// (the plugin's own logging) clears it.
+    private func recordPrint(_ message: String) {
+        guard let export = currentExport else { return }
+        reportedFailure = Self.failureReason(printed: message, export: export)
+    }
+
+    /// The reason in a line the SDK prints before `export` returns 0:
+    /// - "Error in <export>: <reason>" for a failed call (the reason is returned);
+    /// - "Deserialization error: …", "Postcard decoding error in <export>: …" when the plugin
+    ///   couldn't read its arguments, "Serialization error: …" when it couldn't encode its result
+    ///   (the whole line is returned).
+    static func failureReason(printed message: String, export: String) -> String? {
+        let failurePrefix = "Error in \(export): "
+        if message.hasPrefix(failurePrefix) {
+            return String(message.dropFirst(failurePrefix.count))
+        }
+        if message.hasPrefix("Deserialization error: ")
+            || message.hasPrefix("Serialization error: ")
+            || message.hasPrefix("Postcard decoding error in \(export): ") {
+            return message
+        }
+        return nil
+    }
+
+    /// How a failed webview host call reaches the caller: typed errors as they are, anything else
+    /// as a webview host-module error.
+    static func webviewError(_ error: Error) -> ItoError {
+        if let error = error as? ItoError { return error }
+        return .hostModuleError(domain: "webview", message: error.localizedDescription)
+    }
 
     // MARK: - Imports Registration
 
@@ -510,6 +559,8 @@ public class WasmBridge {
                 String(decoding: buffer, as: UTF8.self)
             }
 
+            self.recordPrint(string)
+
             guard let module = self.stdModule else {
                 throw ItoError.hostModuleError(domain: "std", message: "StdModule not provided")
             }
@@ -695,44 +746,44 @@ public class WasmBridge {
                 offset: UInt(requestPtr), count: Int(requestLen)
             ) { buffer in Array(buffer) }
 
+            let request: WebviewRequest
             do {
-                let request = try self.runner.postcardDecoder.decode(WebviewRequest.self, from: requestBytes)
-
-                class ResultBox: @unchecked Sendable {
-                    var response: WebviewResponse?
-                    var error: Error?
-                }
-
-                let box = ResultBox()
-                let module = self.webviewModule
-                let sem = DispatchSemaphore(value: 0)
-
-                Task {
-                    do {
-                        if let module = module {
-                            box.response = try await module.loadUrl(request: request)
-                        } else {
-                            throw ItoError.hostModuleError(domain: "webview", message: "WebviewModule not provided")
-                        }
-                    } catch {
-                        box.error = error
-                    }
-                    sem.signal()
-                }
-                sem.wait()
-
-                if let error = box.error {
-                    RunnerLogger.bridge.error("WasmBridge: webviewLoadUrl FFI Error: \(error)")
-                    throw ItoError.wasmTrap("FFI Error in webview_load_url: \(error.localizedDescription)")
-                }
-
-                let responseBytes = try self.runner.postcardEncoder.encode(box.response!)
-                self.pendingWebviewResponseBytes = responseBytes
-                return [.i32(UInt32(responseBytes.count))]
+                request = try self.runner.postcardDecoder.decode(WebviewRequest.self, from: requestBytes)
             } catch {
-                RunnerLogger.bridge.error("WasmBridge: webviewLoadUrl exception: \(error)")
-                throw ItoError.wasmTrap("Failed to process WebviewRequest: \(error)")
+                throw ItoError.wasmTrap("Failed to decode WebviewRequest: \(error)")
             }
+
+            class ResultBox: @unchecked Sendable {
+                var response: WebviewResponse?
+                var error: Error?
+            }
+
+            let box = ResultBox()
+            let module = self.webviewModule
+            let sem = DispatchSemaphore(value: 0)
+
+            Task {
+                do {
+                    if let module = module {
+                        box.response = try await module.loadUrl(request: request)
+                    } else {
+                        throw ItoError.hostModuleError(domain: "webview", message: "WebviewModule not provided")
+                    }
+                } catch {
+                    box.error = error
+                }
+                sem.signal()
+            }
+            sem.wait()
+
+            if let error = box.error {
+                RunnerLogger.bridge.error("WasmBridge: webviewLoadUrl failed: \(error.localizedDescription)")
+                throw Self.webviewError(error)
+            }
+
+            let responseBytes = try self.runner.postcardEncoder.encode(box.response!)
+            self.pendingWebviewResponseBytes = responseBytes
+            return [.i32(UInt32(responseBytes.count))]
         }
 
         let webviewExecuteJs = Function(store: store, parameters: [.i32, .i32], results: [.i32]) {
@@ -773,8 +824,8 @@ public class WasmBridge {
             sem.wait()
 
             if let error = box.error {
-                RunnerLogger.bridge.error("WasmBridge: webviewExecuteJs FFI Error: \(error)")
-                throw ItoError.wasmTrap("FFI Error in webview_execute_js: \(error.localizedDescription)")
+                RunnerLogger.bridge.error("WasmBridge: webviewExecuteJs failed: \(error.localizedDescription)")
+                throw Self.webviewError(error)
             }
 
             let responseBytes = Array(box.response!.utf8)
