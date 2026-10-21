@@ -131,12 +131,21 @@ public class WasmBridge {
         case .timedOut:
             failure = "The request timed out."
         }
+        // Plugins from before the header see the same 500 as always; newer SDKs read the header
+        // to tell "couldn't reach the server" from a server error.
         return NetResponse(
             status: 500,
-            headers: ["Content-Type": "text/plain"],
+            headers: [
+                "Content-Type": "text/plain",
+                Self.transportErrorHeader: failure.replacingOccurrences(of: "\n", with: " ")
+            ],
             body: Array("FFI Error in \(label): \(failure)".utf8)
         )
     }
+
+    /// The header a host's 500 response carries when the request never reached the server
+    /// (no connection, cancelled, timed out). Net modules must not pass a server's own through.
+    public static let transportErrorHeader = "X-Ito-Transport-Error"
 
     /// Runs a web view operation and waits for it. Returns nil when the call was cancelled: the
     /// plugin then gets an empty result it handles as an error and unwinds normally, where a

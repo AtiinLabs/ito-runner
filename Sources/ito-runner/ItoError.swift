@@ -22,8 +22,9 @@ public enum ItoError: LocalizedError, Equatable {
     case hostModuleError(domain: String, message: String)
 
     /// The plugin's export reported a failure. `reason` is the text the plugin gave
-    /// (e.g. "Host error: Add your server URL"), or nil when it gave none.
-    case pluginFailed(function: String, reason: String?)
+    /// (e.g. "Host error: Add your server URL"), or nil when it gave none; `category` is the kind
+    /// of failure, when the plugin says (`.other` otherwise).
+    case pluginFailed(function: String, reason: String?, category: PluginErrorCategory = .other)
 
     /// The plugin imports what this runner doesn't provide (a host function it lacks, or one with
     /// a different signature), so it was built for a newer host. Named as "module.name".
@@ -47,7 +48,7 @@ public enum ItoError: LocalizedError, Equatable {
             return "Failed to encode native object to Postcard format: \(message)"
         case .hostModuleError(let domain, let message):
             return "Host module '\(domain)' encountered an error: \(message)"
-        case .pluginFailed(let function, let reason):
+        case .pluginFailed(let function, let reason, _):
             return reason ?? "The plugin couldn't complete \(function)."
         case .requiresNewerHost(let missingImports):
             return "The plugin needs host imports this version doesn't provide: \(missingImports.joined(separator: ", "))"
@@ -71,8 +72,8 @@ public enum ItoError: LocalizedError, Equatable {
         case (.postcardEncodingError(let l), .postcardEncodingError(let r)): return l == r
         case (.hostModuleError(let l1, let l2), .hostModuleError(let r1, let r2)):
             return l1 == r1 && l2 == r2
-        case (.pluginFailed(let l1, let l2), .pluginFailed(let r1, let r2)):
-            return l1 == r1 && l2 == r2
+        case (.pluginFailed(let l1, let l2, let l3), .pluginFailed(let r1, let r2, let r3)):
+            return l1 == r1 && l2 == r2 && l3 == r3
         case (.requiresNewerHost(let l), .requiresNewerHost(let r)): return l == r
         case (.unsupportedABI(let l1, let l2), .unsupportedABI(let r1, let r2)):
             return l1 == r1 && l2 == r2

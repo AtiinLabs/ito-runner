@@ -390,9 +390,24 @@ public actor ItoRunner {
         return try readMemory(offset: responsePointer, length: responseLength)
     }
 
-    /// The failure of `name`, with the reason the plugin printed while it ran.
+    /// What the export that just ran reported: the typed failure from its `ito_last_error` export,
+    /// when the plugin has one and reported through it, else the reason it printed (`.other`).
+    /// Nil when it reported nothing.
+    private func reportedFailure() -> (reason: String, category: PluginErrorCategory)? {
+        let printed = bridge?.takeReportedFailure()
+        if isExported("ito_last_error"),
+           let bytes = try? callPacked("ito_last_error"),
+           let payload = try? postcardDecoder.decode(PluginErrorPayload.self, from: bytes) {
+            _ = bridge?.takeReportedFailure()
+            return (payload.message, payload.category)
+        }
+        return printed.map { ($0, .other) }
+    }
+
+    /// The failure of `name`, with what the plugin reported while it ran.
     private func failure(of name: String) -> ItoError {
-        .pluginFailed(function: name, reason: bridge?.takeReportedFailure())
+        let reported = reportedFailure()
+        return .pluginFailed(function: name, reason: reported?.reason, category: reported?.category ?? .other)
     }
 
     /// Runs an export that always returns a value on success. A 0 return is a plugin failure.
@@ -413,8 +428,8 @@ public actor ItoRunner {
         if let bytes = try callPacked(name, arguments) {
             return bytes
         }
-        if let reason = bridge?.takeReportedFailure(), reason != WasmBridge.unsupportedReason {
-            throw ItoError.pluginFailed(function: name, reason: reason)
+        if let reported = reportedFailure(), reported.reason != WasmBridge.unsupportedReason {
+            throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
         }
         return nil
     }
@@ -438,8 +453,9 @@ public actor ItoRunner {
             guard let resultVal = result.first, case .i32(let ret) = resultVal else {
                 throw ItoError.wasmTrap("Expected i32 response from get_home_stream")
             }
-            if ret == 0, let reason = self.bridge?.takeReportedFailure() {
-                throw ItoError.pluginFailed(function: "get_home_stream", reason: reason)
+            if ret == 0, let reported = self.reportedFailure() {
+                throw ItoError.pluginFailed(
+                    function: "get_home_stream", reason: reported.reason, category: reported.category)
             }
             return ret != 0
         }

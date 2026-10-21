@@ -167,6 +167,7 @@ struct HostWorkWaitTests {
 
         #expect(response.status == 500)
         #expect(String(decoding: response.body, as: UTF8.self) == "FFI Error in net_fetch: The request timed out.")
+        #expect(response.headers[WasmBridge.transportErrorHeader] == "The request timed out.")
         await net.requestCancelled()
     }
 
