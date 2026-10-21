@@ -138,10 +138,12 @@ public class WasmBridge {
         )
     }
 
-    /// Runs a web view operation and waits for it, throwing on failure, cancellation or timeout.
+    /// Runs a web view operation and waits for it. Returns nil when the call was cancelled: the
+    /// plugin then gets an empty result it handles as an error and unwinds normally, where a
+    /// thrown error would abort it mid-call. Throws on failure or timeout.
     func webviewForPlugin<Value: Sendable>(
         _ work: @escaping @Sendable (any WebviewModule) async throws -> Value
-    ) throws -> Value {
+    ) throws -> Value? {
         let module = webviewModule
         let outcome = waitForHostWork(timeout: timeouts.webview) { () async throws -> Value in
             guard let module else {
@@ -156,7 +158,7 @@ public class WasmBridge {
             RunnerLogger.bridge.error("WasmBridge: webview call failed: \(error.localizedDescription)")
             throw Self.webviewError(error)
         case .cancelled:
-            throw CancellationError()
+            return nil
         case .timedOut:
             throw ItoError.hostModuleError(domain: "webview", message: "The page took too long to respond.")
         }
@@ -750,9 +752,9 @@ public class WasmBridge {
                 throw ItoError.wasmTrap("Failed to decode WebviewRequest: \(error)")
             }
 
-            let response = try self.webviewForPlugin { module in
+            guard let response = try self.webviewForPlugin({ module in
                 try await module.loadUrl(request: request)
-            }
+            }) else { return [.i32(0)] }
             let responseBytes = try self.runner.postcardEncoder.encode(response)
             self.pendingWebviewResponseBytes = responseBytes
             return [.i32(UInt32(responseBytes.count))]
@@ -772,9 +774,9 @@ public class WasmBridge {
                 offset: UInt(requestPtr), count: Int(requestLen)
             ) { buffer in String(decoding: buffer, as: UTF8.self) }
 
-            let result = try self.webviewForPlugin { module in
+            guard let result = try self.webviewForPlugin({ module in
                 try await module.executeJs(script: scriptString)
-            }
+            }) else { return [.i32(0)] }
             let responseBytes = Array(result.utf8)
             self.pendingWebviewResponseBytes = responseBytes
             return [.i32(UInt32(responseBytes.count))]

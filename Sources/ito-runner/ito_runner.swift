@@ -34,7 +34,8 @@ public actor ItoRunner {
 
     private let executionQueue = DispatchQueue(label: "moe.itoapp.runner.execution")
 
-    /// How long host work (network, web view) may block a plugin call.
+    /// How long host work (network, web view) may block a plugin call. Applies to plugins loaded
+    /// after it is set.
     public private(set) var hostCallTimeouts = HostCallTimeouts()
 
     /// Runs one job on the runner's queue, one at a time. Cancelling the caller's task skips the job
@@ -43,6 +44,8 @@ public actor ItoRunner {
     private func performSerialized<T>(_ operation: @escaping () throws -> T) async throws -> T {
         try Task.checkCancellation()
         let token = CallToken()
+        // Read on the actor: the queue never touches runner state after resuming the caller.
+        let bridge = self.bridge
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 executionQueue.async {
@@ -50,16 +53,17 @@ public actor ItoRunner {
                         continuation.resume(throwing: CancellationError())
                         return
                     }
-                    self.bridge?.activeCallToken = token
-                    defer { self.bridge?.activeCallToken = nil }
+                    bridge?.activeCallToken = token
                     do {
                         let result = try operation()
+                        bridge?.activeCallToken = nil
                         if token.isCancelled {
                             continuation.resume(throwing: CancellationError())
                         } else {
                             continuation.resume(returning: result)
                         }
                     } catch {
+                        bridge?.activeCallToken = nil
                         continuation.resume(throwing: token.isCancelled ? CancellationError() : error)
                     }
                 }
@@ -83,10 +87,9 @@ public actor ItoRunner {
     public func setUiModule(_ module: UiModule) { self.uiModule = module }
     public func setWebviewModule(_ module: WebviewModule) { self.webviewModule = module }
 
-    /// Sets how long host work may block a plugin call, for this and later loaded plugins.
+    /// Sets how long host work may block a plugin call, for plugins loaded afterwards.
     public func setHostCallTimeouts(_ timeouts: HostCallTimeouts) {
         hostCallTimeouts = timeouts
-        bridge?.timeouts = timeouts
     }
 
     /// Loads a `.wasm` file, sets up the host environment (FFI), and instantiates the plugin.

@@ -124,3 +124,100 @@ struct CallCancellationTests {
         #expect(listCalls == 0)
     }
 }
+
+/// A web view module whose loads hang until they are cancelled, reporting when one starts.
+private final class HangingWebviewModule: WebviewModule, @unchecked Sendable {
+    private let started = AsyncStream<Void>.makeStream()
+
+    func loadUrl(request: WebviewRequest) async throws -> WebviewResponse {
+        started.continuation.yield()
+        try await Task.sleep(nanoseconds: 3_600_000_000_000)
+        return WebviewResponse(url: request.url, html: "")
+    }
+
+    func executeJs(script: String) async throws -> String { "" }
+
+    func loadStarted() async {
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+    }
+}
+
+/// Runs blocking bridge work on a dispatch queue, as the runner does, off the cooperative pool.
+private func onRunnerQueue<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global().async { continuation.resume(with: Result { try work() }) }
+    }
+}
+
+@Suite("Host work a plugin call waits on", .timeLimit(.minutes(1)))
+struct HostWorkWaitTests {
+    private let request = NetRequest(url: "http://x", method: "GET", headers: [:], body: nil)
+
+    @Test func aRequestPastTheDeadlineReachesThePluginAsA500() async throws {
+        let net = HangingNetModule()
+        // Configured before it reaches the queue, then used only there, as in the runner.
+        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        bridge.netModule = net
+        bridge.timeouts = HostCallTimeouts(net: 0.05, webview: 0.05)
+
+        let response = try await onRunnerQueue { [request] in
+            bridge.fetchForPlugin(request, options: nil, label: "net_fetch")
+        }
+
+        #expect(response.status == 500)
+        #expect(String(decoding: response.body, as: UTF8.self) == "FFI Error in net_fetch: The request timed out.")
+        await net.requestCancelled()
+    }
+
+    @Test func aCancelledCallsRequestReachesThePluginAsA500() async throws {
+        let net = HangingNetModule()
+        // Configured before it reaches the queue, then used only there, as in the runner.
+        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        bridge.netModule = net
+        let token = CallToken()
+        bridge.activeCallToken = token
+
+        let response = Task { [request] in
+            try await onRunnerQueue { bridge.fetchForPlugin(request, options: nil, label: "net_fetch_v2") }
+        }
+        await net.requestStarted()
+        token.cancel()
+
+        let body = String(decoding: try await response.value.body, as: UTF8.self)
+        #expect(body == "FFI Error in net_fetch_v2: The request was cancelled.")
+        await net.requestCancelled()
+    }
+
+    @Test func aCancelledWebviewLoadGivesThePluginNoResult() async throws {
+        let webview = HangingWebviewModule()
+        // Configured before it reaches the queue, then used only there, as in the runner.
+        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        bridge.webviewModule = webview
+        let token = CallToken()
+        bridge.activeCallToken = token
+
+        let result = Task {
+            try await onRunnerQueue {
+                try bridge.webviewForPlugin { try await $0.loadUrl(request: WebviewRequest(url: "http://x", script: nil)) }
+            }
+        }
+        await webview.loadStarted()
+        token.cancel()
+
+        #expect(try await result.value == nil)
+    }
+
+    @Test func aWebviewLoadPastTheDeadlineThrows() async throws {
+        // Configured before it reaches the queue, then used only there, as in the runner.
+        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        bridge.webviewModule = HangingWebviewModule()
+        bridge.timeouts = HostCallTimeouts(net: 0.05, webview: 0.05)
+
+        await #expect(throws: ItoError.hostModuleError(domain: "webview", message: "The page took too long to respond.")) {
+            try await onRunnerQueue {
+                try bridge.webviewForPlugin { try await $0.loadUrl(request: WebviewRequest(url: "http://x", script: nil)) }
+            }
+        }
+    }
+}
