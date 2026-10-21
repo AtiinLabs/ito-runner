@@ -141,6 +141,29 @@ public struct PluginInfo: Codable, Sendable {
         self.imports = try container.decodeIfPresent([String].self, forKey: .imports)
     }}
 
+/// What kind of failure a plugin reported, so the host can offer the right way out. Sent by
+/// plugins through their `ito_last_error` export; matches the SDK's `ErrorCategory`.
+public enum PluginErrorCategory: Int32, Codable, Sendable, PostcardEnumMarker {
+    /// The plugin needs settings it doesn't have (e.g. a server address).
+    case needsSetup = 0
+    /// The service rejected the plugin's credentials.
+    case unauthorized = 1
+    /// The service couldn't be reached.
+    case network = 2
+    /// The service answered with an error of its own.
+    case server = 3
+    /// What was asked for doesn't exist.
+    case notFound = 4
+    /// Anything else.
+    case other = 5
+}
+
+/// The failure a plugin reports through `ito_last_error`.
+public struct PluginErrorPayload: Codable, Sendable {
+    public let category: PluginErrorCategory
+    public let message: String
+}
+
 public enum ContentRating: Int32, Codable, Sendable, PostcardEnumMarker {
     case Safe = 0
     case Suggestive = 1  // Ecchi

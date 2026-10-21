@@ -123,7 +123,7 @@ public class WasmBridge {
         let failure: String
         switch outcome {
         case .completed(let response):
-            return response
+            return Self.withoutTransportErrorHeader(response)
         case .failed(let error):
             failure = error.localizedDescription
         case .cancelled:
@@ -131,11 +131,32 @@ public class WasmBridge {
         case .timedOut:
             failure = "The request timed out."
         }
+        // Plugins from before the header see the same 500 as always; newer SDKs read the header
+        // to tell "couldn't reach the server" from a server error.
         return NetResponse(
             status: 500,
-            headers: ["Content-Type": "text/plain"],
+            headers: [
+                "Content-Type": "text/plain",
+                Self.transportErrorHeader: failure.components(separatedBy: .newlines).joined(separator: " ")
+            ],
             body: Array("FFI Error in \(label): \(failure)".utf8)
         )
+    }
+
+    /// The header a host's 500 response carries when the request never reached the server
+    /// (no connection, cancelled, timed out). Only the host sets it: a server's own is removed.
+    public static let transportErrorHeader = "X-Ito-Transport-Error"
+
+    /// `response` without a transport-error header a server sent, which would make the plugin
+    /// think its request never arrived.
+    private static func withoutTransportErrorHeader(_ response: NetResponse) -> NetResponse {
+        let spoofed = response.headers.keys.filter {
+            $0.caseInsensitiveCompare(transportErrorHeader) == .orderedSame
+        }
+        guard !spoofed.isEmpty else { return response }
+        var headers = response.headers
+        spoofed.forEach { headers[$0] = nil }
+        return NetResponse(status: response.status, headers: headers, body: response.body)
     }
 
     /// Runs a web view operation and waits for it. Returns nil when the call was cancelled: the
