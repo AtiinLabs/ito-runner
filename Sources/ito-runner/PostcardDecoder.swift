@@ -20,7 +20,7 @@ public struct ItoPostcardDecoder: Sendable {
         if T.self is any PostcardEnum.Type {
             let singleDecoder = try decoder.singleValueContainer() as! _PostcardSingleValueDecoder
             let d = try singleDecoder.decodeVarint()
-            decoder.userInfo[enumDiscriminantKey] = UInt32(d)
+            decoder.userInfo[enumDiscriminantKey] = try narrow(d, to: UInt32.self)
         }
 
         let resolvedType = try T(from: decoder)
@@ -58,7 +58,7 @@ private class _PostcardDecoder: Decoder {
     }
 
     func consume(_ count: Int) throws -> ArraySlice<UInt8> {
-        guard currentIndex + count <= data.count else {
+        guard count >= 0, count <= data.count - currentIndex else {
             throw ItoError.postcardDecodingError(
                 "Unexpected end of data while attempting to read \(count) bytes.")
         }
@@ -81,7 +81,7 @@ private class _PostcardDecoder: Decoder {
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {
-        return _PostcardUnkeyedDecodingContainer(decoder: self)
+        return try _PostcardUnkeyedDecodingContainer(decoder: self)
     }
 
     func singleValueContainer() throws -> SingleValueDecodingContainer {
@@ -115,7 +115,7 @@ private struct _PostcardKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCon
         } else if isEnum {
             let singleDecoder = try decoder.singleValueContainer() as! _PostcardSingleValueDecoder
             let d = try singleDecoder.decodeVarint()
-            self.discriminant = UInt32(d)
+            self.discriminant = try narrow(d, to: UInt32.self)
         } else {
             self.discriminant = nil
         }
@@ -335,27 +335,20 @@ private struct _PostcardUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     var count: Int?
     var currentIndex: Int = 0
 
-    init(decoder: _PostcardDecoder) {
+    init(decoder: _PostcardDecoder) throws {
         self.decoder = decoder
-        // We peek or expect the array length to be decoded first.
-        // Swift Arrays typically decode `count` and then loop.
-        // We will leave `count = nil` and handle decoding organically if the
-        // array implementation asks for the values.
-        // Actually, in Postcard, sequences ALWAYS start with a varint length.
-        // We need to read it here so we know when `isAtEnd` is true.
-        do {
-            let singleDecoder = try decoder.singleValueContainer() as! _PostcardSingleValueDecoder
-            let lengthInt = try singleDecoder.decodeVarint()
-
-            if let isMap = decoder.userInfo[mapFlagKey] as? Bool, isMap {
-                // For maps, count is ENTRIES. But UnkeyedContainer iterates ITEMS (Key+Value).
-                // So we multiply by 2.
-                self.count = Int(lengthInt) * 2
-            } else {
-                self.count = Int(lengthInt)
+        // In Postcard, sequences always start with a varint length, read here so `isAtEnd` works.
+        let singleDecoder = try decoder.singleValueContainer() as! _PostcardSingleValueDecoder
+        let length = try narrow(singleDecoder.decodeVarint(), to: Int.self)
+        if let isMap = decoder.userInfo[mapFlagKey] as? Bool, isMap {
+            // For maps the length counts entries, but the container iterates keys and values.
+            let (items, overflow) = length.multipliedReportingOverflow(by: 2)
+            guard !overflow else {
+                throw ItoError.postcardDecodingError("Map length \(length) is too large.")
             }
-        } catch {
-            self.count = 0
+            self.count = items
+        } else {
+            self.count = length
         }
     }
 
@@ -563,8 +556,7 @@ private struct _PostcardSingleValueDecoder: SingleValueDecodingContainer {
     func decode(_ type: Int.Type) throws -> Int {
         // Decode i64 zig-zag mapped to Int
         let zigZag = try decodeVarint()
-        let value = decodeZigZag(zigZag)
-        return Int(value)
+        return try narrow(decodeZigZag(zigZag), to: Int.self)
     }
 
     func decode(_ type: Int8.Type) throws -> Int8 {
@@ -574,12 +566,12 @@ private struct _PostcardSingleValueDecoder: SingleValueDecodingContainer {
 
     func decode(_ type: Int16.Type) throws -> Int16 {
         let zigZag = try decodeVarint()
-        return Int16(decodeZigZag(zigZag))
+        return try narrow(decodeZigZag(zigZag), to: Int16.self)
     }
 
     func decode(_ type: Int32.Type) throws -> Int32 {
         let zigZag = try decodeVarint()
-        return Int32(decodeZigZag(zigZag))
+        return try narrow(decodeZigZag(zigZag), to: Int32.self)
     }
 
     func decode(_ type: Int64.Type) throws -> Int64 {
@@ -588,8 +580,7 @@ private struct _PostcardSingleValueDecoder: SingleValueDecodingContainer {
     }
 
     func decode(_ type: UInt.Type) throws -> UInt {
-        let value = try decodeVarint()
-        return UInt(value)
+        return try narrow(decodeVarint(), to: UInt.self)
     }
 
     func decode(_ type: UInt8.Type) throws -> UInt8 {
@@ -597,11 +588,11 @@ private struct _PostcardSingleValueDecoder: SingleValueDecodingContainer {
     }
 
     func decode(_ type: UInt16.Type) throws -> UInt16 {
-        return try UInt16(decodeVarint())
+        return try narrow(decodeVarint(), to: UInt16.self)
     }
 
     func decode(_ type: UInt32.Type) throws -> UInt32 {
-        return try UInt32(decodeVarint())
+        return try narrow(decodeVarint(), to: UInt32.self)
     }
 
     func decode(_ type: UInt64.Type) throws -> UInt64 {
@@ -638,4 +629,16 @@ private struct _PostcardSingleValueDecoder: SingleValueDecodingContainer {
     private func decodeZigZag(_ value: UInt64) -> Int64 {
         return Int64(bitPattern: (value >> 1) ^ (~(value & 1) &+ 1))
     }
+}
+
+/// Converts a decoded integer to a narrower type, throwing when the plugin sent a value that
+/// doesn't fit instead of trapping and taking the app down with it.
+private func narrow<Source: BinaryInteger, Target: FixedWidthInteger>(
+    _ value: Source,
+    to _: Target.Type
+) throws -> Target {
+    guard let narrowed = Target(exactly: value) else {
+        throw ItoError.postcardDecodingError("Value \(value) does not fit in \(Target.self).")
+    }
+    return narrowed
 }

@@ -20,6 +20,8 @@ public class WasmBridge {
 
     private var pendingNetResponseBytes: [UInt8]?
     private var pendingWebviewResponseBytes: [UInt8]?
+    /// The reason the plugin printed for a failure during the current export call.
+    private var reportedFailure: String?
 
     public init(runner: ItoRunner) {
         self.runner = runner
@@ -50,8 +52,35 @@ public class WasmBridge {
         return Int64(bitPattern: packed)
     }
 
-    /// Helper to write an empty or error response (e.g., throwing a swift error across the FFI)
-    /// We can define an error structure later, for now we let it trap or return 0.
+    /// Starts tracking the failure the plugin reports during one export call.
+    func beginCall() {
+        reportedFailure = nil
+    }
+
+    /// The failure the plugin reported since `beginCall()`, if any. Clears it.
+    func takeReportedFailure() -> String? {
+        defer { reportedFailure = nil }
+        return reportedFailure
+    }
+
+    /// The reason in a line the SDK prints before an export returns 0: "Error in <export>: <reason>"
+    /// for a failed call, "Serialization error: <reason>" for a result it could not encode.
+    static func failureReason(printed message: String) -> String? {
+        if message.hasPrefix("Error in "), let separator = message.range(of: ": ") {
+            return String(message[separator.upperBound...])
+        }
+        if message.hasPrefix("Serialization error: ") {
+            return message
+        }
+        return nil
+    }
+
+    /// How a failed webview host call reaches the caller: typed errors as they are, anything else
+    /// as a webview host-module error.
+    static func webviewError(_ error: Error) -> ItoError {
+        if let error = error as? ItoError { return error }
+        return .hostModuleError(domain: "webview", message: error.localizedDescription)
+    }
 
     // MARK: - Imports Registration
 
@@ -510,6 +539,10 @@ public class WasmBridge {
                 String(decoding: buffer, as: UTF8.self)
             }
 
+            if let reason = Self.failureReason(printed: string) {
+                self.reportedFailure = reason
+            }
+
             guard let module = self.stdModule else {
                 throw ItoError.hostModuleError(domain: "std", message: "StdModule not provided")
             }
@@ -695,44 +728,44 @@ public class WasmBridge {
                 offset: UInt(requestPtr), count: Int(requestLen)
             ) { buffer in Array(buffer) }
 
+            let request: WebviewRequest
             do {
-                let request = try self.runner.postcardDecoder.decode(WebviewRequest.self, from: requestBytes)
-
-                class ResultBox: @unchecked Sendable {
-                    var response: WebviewResponse?
-                    var error: Error?
-                }
-
-                let box = ResultBox()
-                let module = self.webviewModule
-                let sem = DispatchSemaphore(value: 0)
-
-                Task {
-                    do {
-                        if let module = module {
-                            box.response = try await module.loadUrl(request: request)
-                        } else {
-                            throw ItoError.hostModuleError(domain: "webview", message: "WebviewModule not provided")
-                        }
-                    } catch {
-                        box.error = error
-                    }
-                    sem.signal()
-                }
-                sem.wait()
-
-                if let error = box.error {
-                    RunnerLogger.bridge.error("WasmBridge: webviewLoadUrl FFI Error: \(error)")
-                    throw ItoError.wasmTrap("FFI Error in webview_load_url: \(error.localizedDescription)")
-                }
-
-                let responseBytes = try self.runner.postcardEncoder.encode(box.response!)
-                self.pendingWebviewResponseBytes = responseBytes
-                return [.i32(UInt32(responseBytes.count))]
+                request = try self.runner.postcardDecoder.decode(WebviewRequest.self, from: requestBytes)
             } catch {
-                RunnerLogger.bridge.error("WasmBridge: webviewLoadUrl exception: \(error)")
-                throw ItoError.wasmTrap("Failed to process WebviewRequest: \(error)")
+                throw ItoError.wasmTrap("Failed to decode WebviewRequest: \(error)")
             }
+
+            class ResultBox: @unchecked Sendable {
+                var response: WebviewResponse?
+                var error: Error?
+            }
+
+            let box = ResultBox()
+            let module = self.webviewModule
+            let sem = DispatchSemaphore(value: 0)
+
+            Task {
+                do {
+                    if let module = module {
+                        box.response = try await module.loadUrl(request: request)
+                    } else {
+                        throw ItoError.hostModuleError(domain: "webview", message: "WebviewModule not provided")
+                    }
+                } catch {
+                    box.error = error
+                }
+                sem.signal()
+            }
+            sem.wait()
+
+            if let error = box.error {
+                RunnerLogger.bridge.error("WasmBridge: webviewLoadUrl failed: \(error.localizedDescription)")
+                throw Self.webviewError(error)
+            }
+
+            let responseBytes = try self.runner.postcardEncoder.encode(box.response!)
+            self.pendingWebviewResponseBytes = responseBytes
+            return [.i32(UInt32(responseBytes.count))]
         }
 
         let webviewExecuteJs = Function(store: store, parameters: [.i32, .i32], results: [.i32]) {
@@ -773,8 +806,8 @@ public class WasmBridge {
             sem.wait()
 
             if let error = box.error {
-                RunnerLogger.bridge.error("WasmBridge: webviewExecuteJs FFI Error: \(error)")
-                throw ItoError.wasmTrap("FFI Error in webview_execute_js: \(error.localizedDescription)")
+                RunnerLogger.bridge.error("WasmBridge: webviewExecuteJs failed: \(error.localizedDescription)")
+                throw Self.webviewError(error)
             }
 
             let responseBytes = Array(box.response!.utf8)
