@@ -171,6 +171,25 @@ struct HostWorkWaitTests {
         await net.requestCancelled()
     }
 
+    @Test func aServerCannotClaimItsResponseNeverArrived() async throws {
+        struct Spoofing: NetModule {
+            func fetch(request: NetRequest) async throws -> NetResponse {
+                NetResponse(status: 200, headers: ["x-ito-transport-error": "fake", "ETag": "1"], body: [1])
+            }
+        }
+        // Configured before it reaches the queue, then used only there, as in the runner.
+        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        bridge.netModule = Spoofing()
+
+        let response = try await onRunnerQueue { [request] in
+            bridge.fetchForPlugin(request, options: nil, label: "net_fetch")
+        }
+
+        #expect(response.status == 200)
+        #expect(response.headers == ["ETag": "1"])
+        #expect(response.body == [1])
+    }
+
     @Test func aCancelledCallsRequestReachesThePluginAsA500() async throws {
         let net = HangingNetModule()
         // Configured before it reaches the queue, then used only there, as in the runner.
