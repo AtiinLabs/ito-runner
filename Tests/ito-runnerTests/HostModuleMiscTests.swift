@@ -17,7 +17,7 @@ final class MockJsModule: JsModule, Sendable {
 }
 
 final class MockStdModule: StdModule, Sendable {
-    func RunnerLogger.core.debug("\(message: String)") {
+    func print(message: String) {
         // Assertions are tricky without shared state, but we can verify it doesn't crash
     }
 }
