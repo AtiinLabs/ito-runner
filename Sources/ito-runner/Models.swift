@@ -169,6 +169,8 @@ public enum PluginErrorCategory: Int32, Codable, Sendable, PostcardEnumMarker {
     case notFound = 4
     /// Anything else.
     case other = 5
+    /// Explicit non-participation in an optional export (error protocol version 2).
+    case unsupported = 6
 }
 
 /// The failure a plugin reports through `ito_last_error`.

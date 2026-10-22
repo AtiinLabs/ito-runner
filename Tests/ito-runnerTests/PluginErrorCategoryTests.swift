@@ -108,8 +108,8 @@ struct PluginErrorCategoryTests {
     }
 
     @Test func reportsDecodeFromTheBytesTheSDKWrites() throws {
-        // ito-rs encodes ErrorCategory as a zigzag i32 (NeedsSetup 0 … Other 5), then the message.
-        let categories: [PluginErrorCategory] = [.needsSetup, .unauthorized, .network, .server, .notFound, .other]
+        // ito-rs encodes ErrorCategory as a zigzag i32 (NeedsSetup0 … Unsupported6), then the message.
+        let categories: [PluginErrorCategory] = [.needsSetup, .unauthorized, .network, .server, .notFound, .other, .unsupported]
         for (index, category) in categories.enumerated() {
             let payload = try ItoPostcardDecoder().decode(PluginErrorPayload.self, from: [UInt8(index * 2), 1, 0x78])
             #expect(payload.category == category)

@@ -47,6 +47,17 @@ path for older plugins or image transforms. A thrown error is an explicit refusa
 do not fall back to another fetch path. Keep request headers transient rather than
 persisting them with the logical image locator.
 
+### Error-report protocol versions
+
+The runner reads optional `ito_error_version() -> i32` once when loading a plugin.
+Absent means version 1; a present malformed or trapping export rejects the load.
+Version 2 reports unsupported operations with the explicit `unsupported` category.
+Other failures remain refusals even if their message says “Unsupported operation.”
+
+For version 1 only, `other` plus that exact legacy text still means unsupported:
+older SDKs used it for both cases, so that historical ambiguity cannot be recovered.
+Typed authentication or server errors never become unsupported based on their text.
+
 ## License
 
 [PolyForm Shield 1.0.0](LICENSE)
