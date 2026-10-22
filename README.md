@@ -31,6 +31,22 @@ let results = try await runner.getSearchMangaList(query: "frieren", page: 1, fil
 
 The default modules cover tests and simple hosts; Ito provides its own implementations of the host module protocols in `HostModules.swift`.
 
+### Native image requests
+
+`getImageRequest(_:)` optionally resolves a plugin-owned image locator into a
+`PluginImageRequest` (URL and headers), without downloading image bytes. Fetch the
+result outside the runner's serialized execution lane.
+
+Before fetching, read the plugin's independently configured `getImageOrigins()`
+and require the destination's scheme, host, and effective port to match an allowed
+origin. Reject userinfo, non-HTTP(S) destinations, and cross-origin redirects;
+do not attach shared cookies or log the URL/headers.
+
+Missing or unsupported exports return `nil`, allowing the legacy `handleImage(_:)`
+path for older plugins or image transforms. A thrown error is an explicit refusal:
+do not fall back to another fetch path. Keep request headers transient rather than
+persisting them with the logical image locator.
+
 ## License
 
 [PolyForm Shield 1.0.0](LICENSE)

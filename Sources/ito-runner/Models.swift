@@ -30,6 +30,19 @@ public enum PluginType: String, Codable, Sendable, PostcardEnumMarker {
     case novel
 }
 
+/// A native image fetch resolved by a plugin. Hosts authorize the URL against the plugin's
+/// configured image origins before attaching these private headers, and reject cross-origin
+/// redirects. This is a transient request, not the persisted plugin-owned image locator.
+public struct PluginImageRequest: Codable, Equatable, Sendable {
+    public let url: String
+    @PostcardOptionalMapCoded public var headers: [String: String]?
+
+    public init(url: String, headers: [String: String]? = nil) {
+        self.url = url
+        self._headers = PostcardOptionalMapCoded(wrappedValue: headers)
+    }
+}
+
 public struct SettingsSchema: Codable, Sendable {
     public var settings: [Setting]
 }

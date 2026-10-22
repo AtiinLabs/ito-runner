@@ -492,6 +492,28 @@ public actor ItoRunner {
         }
     }
 
+    /// Configured origins authorized for host image fetching, independently of image input.
+    /// Nil when an older plugin doesn't export this or reports Unsupported.
+    public func getImageOrigins() async throws -> [String]? {
+        try await performSerialized {
+            guard self.isExported("get_image_origins"),
+                  let bytes = try self.callOptional("get_image_origins") else { return nil }
+            return try self.postcardDecoder.decode([String].self, from: bytes)
+        }
+    }
+
+    /// Resolves an image locator without fetching bytes. Nil means this optional export is
+    /// absent or unsupported; a reported failure is a refusal and must not trigger another
+    /// fetch path. Hosts validate the returned URL against getImageOrigins before fetching.
+    public func getImageRequest(_ locator: String) async throws -> PluginImageRequest? {
+        try await performSerialized {
+            guard self.isExported("get_image_request"),
+                  let bytes = try self.callOptional("get_image_request", [.bytes(Array(locator.utf8))])
+            else { return nil }
+            return try self.postcardDecoder.decode(PluginImageRequest.self, from: bytes)
+        }
+    }
+
     private func allocBytes(_ bytes: [UInt8]) throws -> (ptr: Int32, len: Int32) {
         if bytes.isEmpty { return (0, 0) }
         let allocResult = try self.executeExport("alloc", args: [.i32(UInt32(bytes.count))])
