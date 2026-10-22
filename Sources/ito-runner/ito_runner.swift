@@ -12,6 +12,7 @@ public actor ItoRunner {
 
     /// The memory space shared by the Wasm plugin and swift.
     private var memory: Memory?
+    private var errorProtocolVersion: UInt32 = 1
 
     /// The Object Bridge Registry, used to securely store Swift objects and pass their integer IDs to Wasm.
     public let registry: DescriptorRegistry
@@ -168,12 +169,14 @@ public actor ItoRunner {
             guard case .memory(let memory)? = instance.exports["memory"] else {
                 throw ItoError.wasmTrap("Plugin did not export linear 'memory'.")
             }
+            let errorProtocolVersion = try Self.errorReportVersion(of: instance)
 
             // Clear any lingering state from previous runs
             bridge.htmlModule?.clear()
             self.instance = instance
             self.bridge = bridge
             self.memory = memory
+            self.errorProtocolVersion = errorProtocolVersion
 
         } catch let error as ItoError {
             throw error
@@ -189,6 +192,22 @@ public actor ItoRunner {
             throw ItoError.wasmTrap("ito_abi_version must return an i32")
         }
         return Int(version)
+    }
+
+    /// Version 1 encoded Unsupported as an ordinary failure message. Version 2 gives it an
+    /// explicit category. A malformed version export must not silently downgrade the protocol.
+    private static func errorReportVersion(of instance: Instance) throws -> UInt32 {
+        guard let exported = instance.exports["ito_error_version"] else { return 1 }
+        guard case .function(let function) = exported,
+              function.type.parameters.isEmpty,
+              function.type.results.count == 1,
+              function.type.results.first == .i32 else {
+            throw ItoError.wasmTrap("ito_error_version must be () -> i32")
+        }
+        guard case .i32(let version)? = try function([]).first, version > 0 else {
+            throw ItoError.wasmTrap("ito_error_version must return a positive version")
+        }
+        return version
     }
 
     /// Loads a packaged `.ito` bundle, extracting the wasm logic and returning the manifest.
@@ -422,16 +441,17 @@ public actor ItoRunner {
         return try postcardDecoder.decode(T.self, from: bytes)
     }
 
-    /// Runs an export where a 0 return also means "nothing": nil when the plugin reported no failure
-    /// or reported it doesn't support the request, which is how the SDK says "not handled".
+    /// Optional results preserve legacy protocol-1 Unsupported messages, but typed refusals
+    /// never become capability signals merely because their text says "Unsupported operation".
     private func callOptional(_ name: String, _ arguments: [ExportArgument] = []) throws -> [UInt8]? {
-        if let bytes = try callPacked(name, arguments) {
-            return bytes
+        if let bytes = try callPacked(name, arguments) { return bytes }
+        guard let reported = try reportedFailure() else { return nil }
+        if reported.category == .unsupported { return nil }
+        if errorProtocolVersion == 1, reported.category == .other,
+           reported.reason == WasmBridge.unsupportedReason {
+            return nil
         }
-        if let reported = try reportedFailure(), reported.reason != WasmBridge.unsupportedReason {
-            throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
-        }
-        return nil
+        throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
     }
 
     // MARK: - Core Execution API
