@@ -60,6 +60,14 @@ belong to the host; never infer opaque unit keys from numbered progress, or sile
 queued writes against changed source/account settings. Both argument buffers are freed on
 success, failure, and traps; the scalar acknowledgement allocates no response buffer.
 
+### Runner lifetime
+
+The bridge keeps a weak runner reference, breaking the loaded-runner retain cycle. Dropping
+the runner releases its ownership of the bridge and attached host modules; externally retained
+bridges/modules keep their own lifetimes. Standalone import callbacks retain their codecs and
+use the WASM caller's memory. Keep the runner alive when calling `WasmBridge.readRequest` or
+`writeResponse`; these utilities throw if their runner has gone away.
+
 ### Error-report protocol versions
 
 The runner reads optional `ito_error_version() -> i32` once when loading a plugin.
