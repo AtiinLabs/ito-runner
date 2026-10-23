@@ -47,6 +47,19 @@ path for older plugins or image transforms. A thrown error is an explicit refusa
 do not fall back to another fetch path. Keep request headers transient rather than
 persisting them with the logical image locator.
 
+### Completion notifications
+
+`markChapterRead(mediaKey:chapterKey:)` (manga or novel) and
+`markEpisodeWatched(mediaKey:episodeKey:)` call optional completion exports with
+the plugin's opaque keys. They return `true` only for an acknowledgement;
+absent or unsupported/unhandled exports return `false`, while refusals and traps throw.
+Malformed signatures and acknowledgement values also throw.
+
+Commit local progress before invoking these calls. Durable delivery and idempotent retries
+belong to the host; never infer opaque unit keys from numbered progress, or silently replay
+queued writes against changed source/account settings. Both argument buffers are freed on
+success, failure, and traps; the scalar acknowledgement allocates no response buffer.
+
 ### Error-report protocol versions
 
 The runner reads optional `ito_error_version() -> i32` once when loading a plugin.
