@@ -304,24 +304,26 @@ public actor ItoRunner {
     ///   - bytes: The data to write.
     /// - Throws: `ItoError.memoryOutOfBounds` if the requested range is outside memory bounds.
     public func writeMemory(offset: Int, bytes: [UInt8]) throws {
+        try writeMemoryBytes(offset: offset, bytes: bytes)
+    }
+
+    private func writeMemoryBytes<Bytes: Collection>(offset: Int, bytes: Bytes) throws
+    where Bytes.Element == UInt8 {
         guard let memory = memory else {
             throw ItoError.wasmTrap("Memory is not initialized.")
         }
 
-        let memData = memory.data
+        let memorySize = memory.data.count
         let length = bytes.count
 
-        guard offset >= 0, offset + length <= memData.count else {
+        guard offset >= 0, offset <= memorySize, length <= memorySize - offset else {
             throw ItoError.memoryOutOfBounds(
-                offset: offset, length: length, memorySize: memData.count)
+                offset: offset, length: length, memorySize: memorySize)
         }
 
         // Write the bytes using GuestMemory API
-        memory.withUnsafeMutableBufferPointer(offset: UInt(offset), count: bytes.count) {
-            buffer in
-            bytes.withUnsafeBytes { sourceBuffer in
-                buffer.copyMemory(from: UnsafeRawBufferPointer(sourceBuffer))
-            }
+        memory.withUnsafeMutableBufferPointer(offset: UInt(offset), count: length) { buffer in
+            buffer.copyBytes(from: bytes)
         }
     }
 
@@ -423,6 +425,12 @@ public actor ItoRunner {
         return printed.map { ($0, .other) }
     }
 
+    private func isUnsupported(_ failure: (reason: String, category: PluginErrorCategory)) -> Bool {
+        failure.category == .unsupported ||
+            (errorProtocolVersion == 1 && failure.category == .other &&
+                failure.reason == WasmBridge.unsupportedReason)
+    }
+
     /// The failure of `name`, with what the plugin reported while it ran.
     private func failure(of name: String) throws -> ItoError {
         let reported = try reportedFailure()
@@ -446,12 +454,39 @@ public actor ItoRunner {
     private func callOptional(_ name: String, _ arguments: [ExportArgument] = []) throws -> [UInt8]? {
         if let bytes = try callPacked(name, arguments) { return bytes }
         guard let reported = try reportedFailure() else { return nil }
-        if reported.category == .unsupported { return nil }
-        if errorProtocolVersion == 1, reported.category == .other,
-           reported.reason == WasmBridge.unsupportedReason {
-            return nil
-        }
+        if isUnsupported(reported) { return nil }
         throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
+    }
+
+    private func callCompletion(_ name: String, mediaKey: String, unitKey: String) throws -> Bool {
+        guard let exported = instance?.exports[name] else { return false }
+        guard case .function(let function) = exported,
+              function.type.parameters.count == 4,
+              function.type.parameters.allSatisfy({ $0 == .i32 }),
+              function.type.results.count == 1, function.type.results.first == .i32 else {
+            throw ItoError.wasmTrap("Invalid completion export signature: \(name)")
+        }
+        let media = try allocBytes(mediaKey.utf8)
+        defer { deallocBytes(ptr: media.ptr, len: media.len) }
+        let unit = try allocBytes(unitKey.utf8)
+        defer { deallocBytes(ptr: unit.ptr, len: unit.len) }
+        bridge?.beginCall(name)
+        let result = try executeExport(name, args: [
+            .i32(UInt32(bitPattern: media.ptr)), .i32(UInt32(bitPattern: media.len)),
+            .i32(UInt32(bitPattern: unit.ptr)), .i32(UInt32(bitPattern: unit.len))
+        ])
+        guard case .i32(let acknowledgement)? = result.first else {
+            throw ItoError.wasmTrap("Expected completion acknowledgement: \(name)")
+        }
+        switch acknowledgement {
+        case 1: return true
+        case 0:
+            guard let reported = try reportedFailure() else { return false }
+            if isUnsupported(reported) { return false }
+            throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
+        default:
+            throw ItoError.wasmTrap("Invalid completion acknowledgement: \(name)")
+        }
     }
 
     // MARK: - Core Execution API
@@ -534,14 +569,24 @@ public actor ItoRunner {
         }
     }
 
-    private func allocBytes(_ bytes: [UInt8]) throws -> (ptr: Int32, len: Int32) {
-        if bytes.isEmpty { return (0, 0) }
-        let allocResult = try self.executeExport("alloc", args: [.i32(UInt32(bytes.count))])
+    private func allocBytes<Bytes: Collection>(_ bytes: Bytes) throws -> (ptr: Int32, len: Int32)
+    where Bytes.Element == UInt8 {
+        let length = bytes.count
+        if length == 0 { return (0, 0) }
+        guard let signedLength = Int32(exactly: length) else {
+            throw ItoError.wasmTrap("Argument length exceeds i32")
+        }
+        let allocResult = try self.executeExport("alloc", args: [.i32(UInt32(signedLength))])
         guard let pointerVal = allocResult.first, case .i32(let pointer) = pointerVal else {
             throw ItoError.wasmTrap("Failed to allocate memory")
         }
-        try self.writeMemory(offset: Int(pointer), bytes: bytes)
-        return (Int32(bitPattern: pointer), Int32(bytes.count))
+        do {
+            try writeMemoryBytes(offset: Int(pointer), bytes: bytes)
+        } catch {
+            deallocBytes(ptr: Int32(bitPattern: pointer), len: signedLength)
+            throw error
+        }
+        return (Int32(bitPattern: pointer), signedLength)
     }
 
     private func deallocBytes(ptr: Int32, len: Int32) {
@@ -551,6 +596,21 @@ public actor ItoRunner {
                 "dealloc", args: [.i32(UInt32(bitPattern: ptr)), .i32(UInt32(bitPattern: len))])
         } catch {
             RunnerLogger.core.error("[ItoRunner] Warning: Failed to dealloc memory at \(ptr) (len \(len))")
+        }
+    }
+
+    /// Reports chapter completion after local progress has committed. True acknowledges delivery;
+    /// false means absent/unsupported. Reported failures throw. Calls may be retried idempotently.
+    public func markChapterRead(mediaKey: String, chapterKey: String) async throws -> Bool {
+        try await performSerialized {
+            try self.callCompletion("mark_chapter_read", mediaKey: mediaKey, unitKey: chapterKey)
+        }
+    }
+
+    /// Reports episode completion with the same acknowledgement contract as markChapterRead.
+    public func markEpisodeWatched(mediaKey: String, episodeKey: String) async throws -> Bool {
+        try await performSerialized {
+            try self.callCompletion("mark_episode_watched", mediaKey: mediaKey, unitKey: episodeKey)
         }
     }
 
