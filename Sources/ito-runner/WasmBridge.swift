@@ -4,9 +4,13 @@ import WasmKit
 
 /// WasmBridge acts as the FFI layer connecting WasmKit's `Memory` to native Swift protocols
 /// using the Postcard serialization format.
+/// The runner owns its bridge; the bridge does not retain the actor.
+/// Import callbacks retain codecs and use caller memory. Memory utility methods require a live runner.
 public class WasmBridge {
 
-    private let runner: ItoRunner
+    private weak var runner: ItoRunner?
+    private let postcardEncoder: ItoPostcardEncoder
+    private let postcardDecoder: ItoPostcardDecoder
 
     // Dependencies
     public var netModule: NetModule?
@@ -30,19 +34,23 @@ public class WasmBridge {
 
     public init(runner: ItoRunner) {
         self.runner = runner
+        self.postcardEncoder = runner.postcardEncoder
+        self.postcardDecoder = runner.postcardDecoder
     }
 
     /// Reads and decodes a Postcard struct from Wasm memory
     public func readRequest<T: Decodable>(_ type: T.Type, requestPtr: Int32, requestLen: Int32)
         async throws -> T {
+        guard let runner else { throw ItoError.wasmTrap("Runner is no longer available") }
         let bytes = try await runner.readMemory(offset: Int(requestPtr), length: Int(requestLen))
-        return try runner.postcardDecoder.decode(type, from: bytes)
+        return try postcardDecoder.decode(type, from: bytes)
     }
 
     /// Encodes a Swift struct to Postcard and writes it to Wasm memory.
     /// Returns the packed (pointer << 32 | length) response.
     public func writeResponse<T: Encodable>(_ response: T) async throws -> Int64 {
-        let bytes = try runner.postcardEncoder.encode(response)
+        guard let runner else { throw ItoError.wasmTrap("Runner is no longer available") }
+        let bytes = try postcardEncoder.encode(response)
 
         let allocResult = try await runner.executeExport("alloc", args: [.i32(UInt32(bytes.count))])
         guard let pointerVal = allocResult.first, case .i32(let pointer) = pointerVal else {
@@ -50,7 +58,7 @@ public class WasmBridge {
         }
 
         // Write the encoded bytes to the allocated pointer
-        try await runner.writeMemory(offset: Int(pointer), bytes: Array(bytes))
+        try await runner.writeMemory(offset: Int(pointer), bytes: bytes)
 
         // Pack pointer and length into Int64
         let packed = (UInt64(pointer) << 32) | UInt64(UInt32(bytes.count))
@@ -224,13 +232,13 @@ public class WasmBridge {
 
             let request: NetRequest
             do {
-                request = try self.runner.postcardDecoder.decode(NetRequest.self, from: requestBytes)
+                request = try self.postcardDecoder.decode(NetRequest.self, from: requestBytes)
             } catch {
                 throw ItoError.wasmTrap("Failed to decode NetRequest: \(error)")
             }
             let response = self.fetchForPlugin(request, options: nil, label: "net_fetch")
             do {
-                let responseBytes = try self.runner.postcardEncoder.encode(response)
+                let responseBytes = try self.postcardEncoder.encode(response)
                 self.pendingNetResponseBytes = responseBytes
                 return [.i32(UInt32(responseBytes.count))]
             } catch {
@@ -261,14 +269,14 @@ public class WasmBridge {
             let request: NetRequest
             let options: NetOptions
             do {
-                request = try self.runner.postcardDecoder.decode(NetRequest.self, from: requestBytes)
-                options = try self.runner.postcardDecoder.decode(NetOptions.self, from: optBytes)
+                request = try self.postcardDecoder.decode(NetRequest.self, from: requestBytes)
+                options = try self.postcardDecoder.decode(NetOptions.self, from: optBytes)
             } catch {
                 throw ItoError.wasmTrap("Failed to decode NetRequest: \(error)")
             }
             let response = self.fetchForPlugin(request, options: options, label: "net_fetch_v2")
             do {
-                let responseBytes = try self.runner.postcardEncoder.encode(response)
+                let responseBytes = try self.postcardEncoder.encode(response)
                 self.pendingNetResponseBytes = responseBytes
                 return [.i32(UInt32(responseBytes.count))]
             } catch {
@@ -351,7 +359,7 @@ public class WasmBridge {
             // RunnerLogger.bridge.debug("\("WasmBridge HtmlSelect(id: \(elementId)"), selector: '\(selectorString)')")
             let resultIds = try module.select(elementId: elementId, selector: selectorString)
             let resultInt32s = resultIds.map { Int32(bitPattern: $0) }
-            let responseBytes = try self.runner.postcardEncoder.encode(resultInt32s)
+            let responseBytes = try self.postcardEncoder.encode(resultInt32s)
 
             let allocResult = try alloc([.i32(UInt32(responseBytes.count))])
             let responsePtr = allocResult[0].i32
@@ -388,7 +396,7 @@ public class WasmBridge {
 
             // RunnerLogger.bridge.debug("\("WasmBridge HtmlText(id: \(elementId)"))")
             let text = try module.text(elementId: elementId)
-            let responseBytes = try self.runner.postcardEncoder.encode(text)
+            let responseBytes = try self.postcardEncoder.encode(text)
 
             let allocResult = try alloc([.i32(UInt32(responseBytes.count))])
             let responsePtr = allocResult[0].i32
@@ -437,7 +445,7 @@ public class WasmBridge {
             var responseBytes: [UInt8] = []
             if let val = attrVal {
                 responseBytes.append(1)  // Option::Some
-                responseBytes.append(contentsOf: try self.runner.postcardEncoder.encode(val))
+                responseBytes.append(contentsOf: try self.postcardEncoder.encode(val))
             } else {
                 responseBytes.append(0)  // Option::None
             }
@@ -484,7 +492,7 @@ public class WasmBridge {
             guard let module = self.htmlModule else { throw ItoError.hostModuleError(domain: "html", message: "HtmlModule not provided") }
 
             let text = try module.ownText(elementId: elementId)
-            let responseBytes = try self.runner.postcardEncoder.encode(text)
+            let responseBytes = try self.postcardEncoder.encode(text)
             let allocResult = try alloc([.i32(UInt32(responseBytes.count))])
             let responsePtr = allocResult[0].i32
 
@@ -504,7 +512,7 @@ public class WasmBridge {
             guard let module = self.htmlModule else { throw ItoError.hostModuleError(domain: "html", message: "HtmlModule not provided") }
 
             let text = try module.html(elementId: elementId)
-            let responseBytes = try self.runner.postcardEncoder.encode(text)
+            let responseBytes = try self.postcardEncoder.encode(text)
             let allocResult = try alloc([.i32(UInt32(responseBytes.count))])
             let responsePtr = allocResult[0].i32
 
@@ -524,7 +532,7 @@ public class WasmBridge {
             guard let module = self.htmlModule else { throw ItoError.hostModuleError(domain: "html", message: "HtmlModule not provided") }
 
             let text = try module.outerHtml(elementId: elementId)
-            let responseBytes = try self.runner.postcardEncoder.encode(text)
+            let responseBytes = try self.postcardEncoder.encode(text)
             let allocResult = try alloc([.i32(UInt32(responseBytes.count))])
             let responsePtr = allocResult[0].i32
 
@@ -558,7 +566,7 @@ public class WasmBridge {
             }
 
             let resultString = try module.evaluate(script: scriptString)
-            let responseBytes = try self.runner.postcardEncoder.encode(resultString)
+            let responseBytes = try self.postcardEncoder.encode(resultString)
 
             let allocResult = try alloc([.i32(UInt32(responseBytes.count))])
             let responsePtr = allocResult[0].i32
@@ -665,7 +673,7 @@ public class WasmBridge {
             var responseBytes: [UInt8] = []
             if let v = val {
                 responseBytes.append(1)  // Option::Some
-                responseBytes.append(contentsOf: try self.runner.postcardEncoder.encode(v))
+                responseBytes.append(contentsOf: try self.postcardEncoder.encode(v))
             } else {
                 responseBytes.append(0)  // Option::None
             }
@@ -724,7 +732,7 @@ public class WasmBridge {
             }
 
             let langs = self.envModule?.getLanguages() ?? ["en"]
-            let responseBytes = try self.runner.postcardEncoder.encode(langs)
+            let responseBytes = try self.postcardEncoder.encode(langs)
 
             let allocResult = try alloc([.i32(UInt32(responseBytes.count))])
             let responsePtr = allocResult[0].i32
@@ -762,7 +770,7 @@ public class WasmBridge {
             }
 
             // Decode and push
-            if let comp = try? self.runner.postcardDecoder.decode(HomeComponent.self, from: compBytes) {
+            if let comp = try? self.postcardDecoder.decode(HomeComponent.self, from: compBytes) {
                 self.uiModule?.pushHomeComponent(comp)
             }
             return []
@@ -784,7 +792,7 @@ public class WasmBridge {
 
             let request: WebviewRequest
             do {
-                request = try self.runner.postcardDecoder.decode(WebviewRequest.self, from: requestBytes)
+                request = try self.postcardDecoder.decode(WebviewRequest.self, from: requestBytes)
             } catch {
                 throw ItoError.wasmTrap("Failed to decode WebviewRequest: \(error)")
             }
@@ -792,7 +800,7 @@ public class WasmBridge {
             guard let response = try self.webviewForPlugin({ module in
                 try await module.loadUrl(request: request)
             }) else { return [.i32(0)] }
-            let responseBytes = try self.runner.postcardEncoder.encode(response)
+            let responseBytes = try self.postcardEncoder.encode(response)
             self.pendingWebviewResponseBytes = responseBytes
             return [.i32(UInt32(responseBytes.count))]
         }
