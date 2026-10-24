@@ -92,6 +92,7 @@ public protocol WebviewModule: Sendable {
 
 public struct WebviewRequest: Codable, Sendable {
     public let url: String
+    /// Reserved; hosts ignore it. The SDK always sends nil.
     public let script: String?
 
     public init(url: String, script: String?) {
