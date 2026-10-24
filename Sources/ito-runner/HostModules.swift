@@ -4,23 +4,6 @@ import Foundation
 
 public protocol NetModule: Sendable {
     func fetch(request: NetRequest) async throws -> NetResponse
-    func fetch(request: NetRequest, options: NetOptions) async throws -> NetResponse
-}
-
-public extension NetModule {
-    func fetch(request: NetRequest, options: NetOptions) async throws -> NetResponse {
-        return try await fetch(request: request)
-    }
-}
-
-public struct NetOptions: Codable, Sendable {
-    public let rateLimit: Int32
-    public let persistCookies: Bool
-
-    public init(rateLimit: Int32 = 0, persistCookies: Bool = false) {
-        self.rateLimit = rateLimit
-        self.persistCookies = persistCookies
-    }
 }
 
 public struct NetRequest: Codable, Sendable {
