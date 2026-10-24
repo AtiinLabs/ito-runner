@@ -19,6 +19,8 @@ struct PluginErrorCategoryTests {
             (data (i32.const 2048) "\\00\\13Add your server URL")
             ;; {category: other (zigzag 10), message: "Unsupported operation"}
             (data (i32.const 2100) "\\0a\\15Unsupported operation")
+            ;; {category: needsLogin (zigzag 14), message: "Sign in!"}
+            (data (i32.const 2200) "\\0e\\08Sign in!")
             (global $next (mut i32) (i32.const 4096))
             (global $deallocs (mut i32) (i32.const 0))
             (global $lastError (mut i64) (i64.const 0))
@@ -62,6 +64,11 @@ struct PluginErrorCategoryTests {
                 i32.const 128
                 i32.const 37
                 call $print
+                i64.const 0)
+            (func (export "get_anime_list") (param i32 i32 i32) (result i64)
+                ;; (2200 << 32) | 10
+                i64.const 9448928051210
+                global.set $lastError
                 i64.const 0)
         )
         """
@@ -107,9 +114,21 @@ struct PluginErrorCategoryTests {
         }
     }
 
+    @Test func aSignInRequestArrivesAsNeedsLogin() async throws {
+        let runner = try await loadRunner()
+
+        await #expect(throws: ItoError.pluginFailed(
+            function: "get_anime_list", reason: "Sign in!", category: .needsLogin
+        )) {
+            try await runner.getAnimeList(listing: Listing(id: "all", name: "All", kind: 0), page: 1)
+        }
+    }
+
     @Test func reportsDecodeFromTheBytesTheSDKWrites() throws {
-        // ito-rs encodes ErrorCategory as a zigzag i32 (NeedsSetup0 … Unsupported6), then the message.
-        let categories: [PluginErrorCategory] = [.needsSetup, .unauthorized, .network, .server, .notFound, .other, .unsupported]
+        // ito-rs encodes ErrorCategory as a zigzag i32 (NeedsSetup0 … NeedsLogin7), then the message.
+        let categories: [PluginErrorCategory] = [
+            .needsSetup, .unauthorized, .network, .server, .notFound, .other, .unsupported, .needsLogin
+        ]
         for (index, category) in categories.enumerated() {
             let payload = try ItoPostcardDecoder().decode(PluginErrorPayload.self, from: [UInt8(index * 2), 1, 0x78])
             #expect(payload.category == category)

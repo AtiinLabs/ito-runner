@@ -195,6 +195,8 @@ public enum PluginErrorCategory: Int32, Codable, Sendable, PostcardEnumMarker {
     case other = 5
     /// Explicit non-participation in an optional export (error protocol version 2).
     case unsupported = 6
+    /// The service needs the user to sign in on its website.
+    case needsLogin = 7
 }
 
 /// The failure a plugin reports through `ito_last_error`.
