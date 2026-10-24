@@ -24,10 +24,34 @@ public struct PluginManifest: Codable, Sendable {
     }
 }
 
-public enum PluginType: String, Codable, Sendable, PostcardEnumMarker {
+/// What a catalog entry is. A plugin may serve several kinds (`PluginInfo.supportedKinds`).
+/// Matches the SDK's `MediaKind`; manifests name kinds by their raw value.
+public enum MediaKind: String, Codable, Sendable, CaseIterable {
     case manga
     case anime
     case novel
+
+    /// The SDK's `MediaKind` value, as plugin exports take it.
+    public var wireValue: Int32 {
+        switch self {
+        case .manga: return 0
+        case .anime: return 1
+        case .novel: return 2
+        }
+    }
+
+    /// How a chapter of this kind of entry is read when its plugin doesn't say.
+    public var defaultContentKind: ContentKind {
+        self == .novel ? .text : .images
+    }
+}
+
+/// How a chapter is read, whatever its entry's kind: `images` in the page reader, `text` in the
+/// text reader, which lays out text pages and shows image pages inline. Matches the SDK's
+/// `ContentKind`.
+public enum ContentKind: Int32, Codable, Sendable, PostcardEnumMarker {
+    case images = 0
+    case text = 1
 }
 
 /// A native image fetch resolved by a plugin. Hosts authorize the URL against the plugin's
@@ -97,7 +121,11 @@ public struct PluginInfo: Codable, Sendable {
     public let nsfw: Int?
     public let language: String?
     public let languages: [String]?
-    public let type: PluginType  // Manga by default or from JSON
+    /// The plugin's primary kind. Older hosts read only this.
+    public let type: MediaKind
+    /// Every kind the plugin serves, as its packager recorded them; nil for plugins built before
+    /// plugins could serve several.
+    public let kinds: [MediaKind]?
     public let author: String?
     public let description: String?
     public let tags: [String]?
@@ -116,7 +144,8 @@ public struct PluginInfo: Codable, Sendable {
         id: String, name: String, version: String, minAppVersion: String, url: String? = nil,
         sourceUrl: String? = nil, contentRating: ContentRating? = nil,
         nsfw: Int? = nil, language: String? = nil, languages: [String]? = nil,
-        type: PluginType = .manga, author: String? = nil, description: String? = nil, tags: [String]? = nil,
+        type: MediaKind = .manga, kinds: [MediaKind]? = nil, author: String? = nil,
+        description: String? = nil, tags: [String]? = nil,
         archived: Bool? = nil, archivedReason: String? = nil, archivedDate: String? = nil,
         abi: Int? = nil, sdk: String? = nil, imports: [String]? = nil
     ) {
@@ -131,6 +160,7 @@ public struct PluginInfo: Codable, Sendable {
         self.language = language
         self.languages = languages
         self.type = type
+        self.kinds = kinds
         self.author = author
         self.description = description
         self.tags = tags
@@ -143,7 +173,7 @@ public struct PluginInfo: Codable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, version, minAppVersion = "min_app_version", url, sourceUrl, contentRating, nsfw, language, languages, type, author, description, tags, archived, archivedReason = "archived_reason", archivedDate = "archived_date", abi, sdk, imports
+        case id, name, version, minAppVersion = "min_app_version", url, sourceUrl, contentRating, nsfw, language, languages, type, kinds, author, description, tags, archived, archivedReason = "archived_reason", archivedDate = "archived_date", abi, sdk, imports
     }
 
     public init(from decoder: Decoder) throws {
@@ -166,7 +196,8 @@ public struct PluginInfo: Codable, Sendable {
         self.nsfw = try container.decodeIfPresent(Int.self, forKey: .nsfw)
         self.language = try container.decodeIfPresent(String.self, forKey: .language)
         self.languages = try container.decodeIfPresent([String].self, forKey: .languages)
-        self.type = try container.decodeIfPresent(PluginType.self, forKey: .type) ?? .manga
+        self.type = try container.decodeIfPresent(MediaKind.self, forKey: .type) ?? .manga
+        self.kinds = try container.decodeIfPresent([MediaKind].self, forKey: .kinds)
         self.author = try container.decodeIfPresent(String.self, forKey: .author)
         self.description = try container.decodeIfPresent(String.self, forKey: .description)
         self.tags = try container.decodeIfPresent([String].self, forKey: .tags)
@@ -176,7 +207,13 @@ public struct PluginInfo: Codable, Sendable {
         self.abi = try container.decodeIfPresent(Int.self, forKey: .abi)
         self.sdk = try container.decodeIfPresent(String.self, forKey: .sdk)
         self.imports = try container.decodeIfPresent([String].self, forKey: .imports)
-    }}
+    }
+
+    /// Every kind the plugin serves.
+    public var supportedKinds: [MediaKind] {
+        kinds ?? [type]
+    }
+}
 
 /// What kind of failure a plugin reported, so the host can offer the right way out. Sent by
 /// plugins through their `ito_last_error` export; matches the SDK's `ErrorCategory`.
@@ -211,6 +248,89 @@ public enum ContentRating: Int32, Codable, Sendable, PostcardEnumMarker {
     case Nsfw = 2  // Pornographic
 }
 
+/// A chapter of a manga or novel (`Manga.Chapter`, `Novel.Chapter`).
+public struct Chapter: Codable, Sendable, Identifiable {
+    public var id: String { key }
+    public var key: String
+    public var title: String?
+    public var volume: Float32?
+    public var chapter: Float32?
+    public var dateUpdated: Double?  // Option<f64>
+    public var scanlator: String?
+    public var url: String?
+    public var lang: String?
+    public var paywalled: Bool?
+    /// How the chapter is read. Nil when its plugin predates per-chapter kinds (ABI 1) or it was
+    /// stored before them; it is then read as its entry's kind says (`MediaKind.defaultContentKind`).
+    public var kind: ContentKind?
+
+    public init(
+        key: String, title: String? = nil, volume: Float32? = nil, chapter: Float32? = nil,
+        dateUpdated: Double? = nil, scanlator: String? = nil, url: String? = nil,
+        lang: String? = nil, paywalled: Bool? = nil, kind: ContentKind? = nil
+    ) {
+        self.key = key
+        self.title = title
+        self.volume = volume
+        self.chapter = chapter
+        self.dateUpdated = dateUpdated
+        self.scanlator = scanlator
+        self.url = url
+        self.lang = lang
+        self.paywalled = paywalled
+        self.kind = kind
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case key, title, volume, chapter, dateUpdated, scanlator, url, lang, paywalled, kind
+    }
+
+    // ABI 1 plugins lay a chapter out without its kind; ABI 2 always ends it with one. Other
+    // formats (JSON) carry the kind when it is known.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        volume = try container.decodeIfPresent(Float32.self, forKey: .volume)
+        chapter = try container.decodeIfPresent(Float32.self, forKey: .chapter)
+        dateUpdated = try container.decodeIfPresent(Double.self, forKey: .dateUpdated)
+        scanlator = try container.decodeIfPresent(String.self, forKey: .scanlator)
+        url = try container.decodeIfPresent(String.self, forKey: .url)
+        lang = try container.decodeIfPresent(String.self, forKey: .lang)
+        paywalled = try container.decodeIfPresent(Bool.self, forKey: .paywalled)
+        switch decoder.userInfo[postcardABIVersionKey] as? Int {
+        case 1?: kind = nil
+        case .some: kind = try container.decode(ContentKind.self, forKey: .kind)
+        case nil: kind = try container.decodeIfPresent(ContentKind.self, forKey: .kind)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(key, forKey: .key)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(volume, forKey: .volume)
+        try container.encodeIfPresent(chapter, forKey: .chapter)
+        try container.encodeIfPresent(dateUpdated, forKey: .dateUpdated)
+        try container.encodeIfPresent(scanlator, forKey: .scanlator)
+        try container.encodeIfPresent(url, forKey: .url)
+        try container.encodeIfPresent(lang, forKey: .lang)
+        try container.encodeIfPresent(paywalled, forKey: .paywalled)
+        switch encoder.userInfo[postcardABIVersionKey] as? Int {
+        case 1?:
+            break
+        case .some:
+            // The runner resolves unknown kinds before sending a chapter to an ABI 2 plugin.
+            guard let kind else {
+                throw ItoError.postcardEncodingError("A chapter sent to the plugin has no kind.")
+            }
+            try container.encode(kind, forKey: .kind)
+        case nil:
+            try container.encodeIfPresent(kind, forKey: .kind)
+        }
+    }
+}
+
 public struct Manga: Codable, Sendable, Identifiable {
     public var id: String { key }
 
@@ -240,34 +360,7 @@ public struct Manga: Codable, Sendable, Identifiable {
         }
     }
 
-    public struct Chapter: Codable, Sendable, Identifiable {
-        public var id: String { key }
-        public var key: String
-        public var title: String?
-        public var volume: Float32?
-        public var chapter: Float32?
-        public var dateUpdated: Double?  // Option<f64>
-        public var scanlator: String?
-        public var url: String?
-        public var lang: String?
-        public var paywalled: Bool?
-
-        public init(
-            key: String, title: String? = nil, volume: Float32? = nil, chapter: Float32? = nil,
-            dateUpdated: Double? = nil, scanlator: String? = nil, url: String? = nil,
-            lang: String? = nil, paywalled: Bool? = nil
-        ) {
-            self.key = key
-            self.title = title
-            self.volume = volume
-            self.chapter = chapter
-            self.dateUpdated = dateUpdated
-            self.scanlator = scanlator
-            self.url = url
-            self.lang = lang
-            self.paywalled = paywalled
-        }
-    }
+    public typealias Chapter = ito_runner.Chapter
 
     public var key: String
     public var title: String
@@ -326,34 +419,7 @@ public struct Novel: Codable, Sendable, Identifiable {
         }
     }
 
-    public struct Chapter: Codable, Sendable, Identifiable {
-        public var id: String { key }
-        public var key: String
-        public var title: String?
-        public var volume: Float32?
-        public var chapter: Float32?
-        public var dateUpdated: Double?
-        public var scanlator: String?
-        public var url: String?
-        public var lang: String?
-        public var paywalled: Bool?
-
-        public init(
-            key: String, title: String? = nil, volume: Float32? = nil, chapter: Float32? = nil,
-            dateUpdated: Double? = nil, scanlator: String? = nil, url: String? = nil,
-            lang: String? = nil, paywalled: Bool? = nil
-        ) {
-            self.key = key
-            self.title = title
-            self.volume = volume
-            self.chapter = chapter
-            self.dateUpdated = dateUpdated
-            self.scanlator = scanlator
-            self.url = url
-            self.lang = lang
-            self.paywalled = paywalled
-        }
-    }
+    public typealias Chapter = ito_runner.Chapter
 
     public var key: String
     public var title: String
@@ -640,6 +706,51 @@ public struct Anime: Codable, Sendable, Identifiable {
     }
 }
 
+/// A catalog entry of any kind.
+public enum MediaEntry: Codable, Sendable, PostcardEnumMarker {
+    case manga(Manga)
+    case anime(Anime)
+    case novel(Novel)
+
+    enum CodingKeys: Int, CodingKey, PostcardEnumKeys {
+        case manga = 0
+        case anime = 1
+        case novel = 2
+    }
+
+    public var kind: MediaKind {
+        switch self {
+        case .manga: return .manga
+        case .anime: return .anime
+        case .novel: return .novel
+        }
+    }
+
+    public var key: String {
+        switch self {
+        case .manga(let manga): return manga.key
+        case .anime(let anime): return anime.key
+        case .novel(let novel): return novel.key
+        }
+    }
+
+    /// How `chapter`, one of this entry's, is read.
+    public func contentKind(of chapter: Chapter) -> ContentKind {
+        chapter.kind ?? kind.defaultContentKind
+    }
+}
+
+/// One page of catalog entries; a plugin serving several kinds may mix them.
+public struct MediaPageResult: Codable, Sendable {
+    public var entries: [MediaEntry]
+    public var hasNextPage: Bool
+
+    public init(entries: [MediaEntry], hasNextPage: Bool) {
+        self.entries = entries
+        self.hasNextPage = hasNextPage
+    }
+}
+
 public enum HomeComponentValue: Codable, Sendable, PostcardEnumMarker {
     case scroller([Manga], Listing?)
     case mangaList(Bool, Int32?, [Manga], Listing?)
@@ -655,6 +766,10 @@ public enum HomeComponentValue: Codable, Sendable, PostcardEnumMarker {
     case novelBigScroller([Novel], Float32?)
     case filters([FilterItem])
     case links([Link])
+    /// Entries of any kind, from plugins serving several.
+    case mediaScroller([MediaEntry], Listing?)
+    case mediaList(Bool, Int32?, [MediaEntry], Listing?)
+    case mediaBigScroller([MediaEntry], Float32?)
 
     enum CodingKeys: Int, CodingKey, PostcardEnumKeys {
         case scroller = 0
@@ -671,6 +786,9 @@ public enum HomeComponentValue: Codable, Sendable, PostcardEnumMarker {
         case novelBigScroller = 11
         case filters = 12
         case links = 13
+        case mediaScroller = 14
+        case mediaList = 15
+        case mediaBigScroller = 16
     }
 }
 

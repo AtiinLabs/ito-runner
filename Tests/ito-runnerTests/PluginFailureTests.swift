@@ -147,7 +147,7 @@ struct PluginFailureTests {
     @Test func aSuccessfulExportDecodesItsResultAndFreesEveryBuffer() async throws {
         let runner = try await loadRunner()
 
-        let result = try await runner.getSearchMangaList(query: "query", page: 1, filters: nil)
+        let result = try await runner.getSearchMangaList(query: "query", page: 1)
 
         #expect(result.entries.isEmpty)
         #expect(result.hasNextPage == false)

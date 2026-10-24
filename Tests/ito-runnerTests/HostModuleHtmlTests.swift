@@ -151,7 +151,7 @@ struct HostModuleHtmlTests {
         RunnerLogger.core.debug("responseBytes length: \(responseBytes.count)")
         RunnerLogger.core.debug("responseBytes: \(responseBytes)")
 
-        let elements = try runner.postcardDecoder.decode([Int32].self, from: responseBytes)
+        let elements = try ItoPostcardDecoder().decode([Int32].self, from: responseBytes)
         #expect(elements == [43, 44])
     }
 }

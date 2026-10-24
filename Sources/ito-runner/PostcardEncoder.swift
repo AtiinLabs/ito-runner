@@ -4,7 +4,12 @@ import Foundation
 /// Postcard is a #![no_std] focused serialization format used heavily in Rust ecosystems.
 public struct ItoPostcardEncoder: Sendable {
 
-    public init() {}
+    /// The plugin ABI whose layouts to write (`ItoRunner.supportedABIVersions`).
+    public let abiVersion: Int
+
+    public init(abiVersion: Int = ItoRunner.supportedABIVersions.upperBound) {
+        self.abiVersion = abiVersion
+    }
 
     /// Encodes the given value into a Postcard-formatted byte array.
     /// - Parameter value: The value to encode.
@@ -12,6 +17,7 @@ public struct ItoPostcardEncoder: Sendable {
     /// - Throws: `ItoError.postcardEncodingError` if encoding fails.
     public func encode<T: Encodable>(_ value: T) throws -> [UInt8] {
         let encoder = _PostcardEncoder()
+        encoder.userInfo[postcardABIVersionKey] = abiVersion
 
         if let map = value as? PostcardMapMarker {
             try map.encodePostcardMap(to: encoder)

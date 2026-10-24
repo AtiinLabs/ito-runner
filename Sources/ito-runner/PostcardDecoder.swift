@@ -3,7 +3,12 @@ import Foundation
 /// A custom Decoder that decodes Postcard binary format into Swift `Decodable` types.
 public struct ItoPostcardDecoder: Sendable {
 
-    public init() {}
+    /// The plugin ABI whose layouts to read (`ItoRunner.supportedABIVersions`).
+    public let abiVersion: Int
+
+    public init(abiVersion: Int = ItoRunner.supportedABIVersions.upperBound) {
+        self.abiVersion = abiVersion
+    }
 
     /// Decodes a Postcard-formatted byte array into the specified type.
     /// - Parameters:
@@ -16,6 +21,7 @@ public struct ItoPostcardDecoder: Sendable {
 
         let isMap = (type is PostcardMapDecodable.Type)
         decoder.userInfo[mapFlagKey] = isMap
+        decoder.userInfo[postcardABIVersionKey] = abiVersion
 
         if T.self is any PostcardEnum.Type {
             let singleDecoder = try decoder.singleValueContainer() as! _PostcardSingleValueDecoder
@@ -41,6 +47,8 @@ protocol PostcardMapDecodable {}
 extension Dictionary: PostcardMapDecodable {}
 let mapFlagKey = CodingUserInfoKey(rawValue: "ito.postcard.isMap")!
 let enumDiscriminantKey = CodingUserInfoKey(rawValue: "ito.postcard.enumDiscriminant")!
+/// Set by the postcard coders to the plugin ABI they read or write; absent in other formats.
+let postcardABIVersionKey = CodingUserInfoKey(rawValue: "ito.postcard.abiVersion")!
 
 private class _PostcardDecoder: Decoder {
     var codingPath: [CodingKey] = []
