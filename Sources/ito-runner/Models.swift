@@ -47,6 +47,30 @@ public struct SettingsSchema: Codable, Sendable {
     public var settings: [Setting]
 }
 
+/// A non-destructive diagnostic declared independently of the ABI-1 settings schema.
+public struct SettingsAction: Codable, Equatable, Sendable, Identifiable {
+    public let id: String
+    public let title: String
+    public let summary: String?
+
+    public init(id: String, title: String, summary: String? = nil) {
+        self.id = id
+        self.title = title
+        self.summary = summary
+    }
+}
+
+/// Advisory validation; an empty key denotes a form-level issue.
+public struct SettingIssue: Codable, Equatable, Sendable {
+    public let key: String
+    public let message: String
+
+    public init(key: String, message: String) {
+        self.key = key
+        self.message = message
+    }
+}
+
 public enum Setting: Codable, Sendable, PostcardEnumMarker {
     case toggle(id: String, name: String, summary: String?, defaultValue: Bool)
     case text(id: String, name: String, summary: String?, defaultValue: String)
