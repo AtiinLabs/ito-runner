@@ -165,8 +165,13 @@ public class WasmBridge {
         return NetResponse(status: response.status, headers: headers, body: response.body)
     }
 
+    /// The length a web view import returns when there is no result (the call was cancelled).
+    /// Negative as the plugin reads it, so a zero length can mean an empty result: a script that
+    /// evaluates to nothing. SDK versions before 0.2.1 treat zero as no result too.
+    static let noWebviewResult = UInt32(bitPattern: -1)
+
     /// Runs a web view operation and waits for it. Returns nil when the call was cancelled: the
-    /// plugin then gets an empty result it handles as an error and unwinds normally, where a
+    /// plugin then gets `noWebviewResult` it handles as an error and unwinds normally, where a
     /// thrown error would abort it mid-call. Throws on failure or timeout.
     func webviewForPlugin<Value: Sendable>(
         _ work: @escaping @Sendable (any WebviewModule) async throws -> Value
@@ -730,7 +735,7 @@ public class WasmBridge {
 
             guard let response = try self.webviewForPlugin({ module in
                 try await module.loadUrl(request: request)
-            }) else { return [.i32(0)] }
+            }) else { return [.i32(Self.noWebviewResult)] }
             let responseBytes = try self.postcardEncoder.encode(response)
             self.pendingWebviewResponseBytes = responseBytes
             return [.i32(UInt32(responseBytes.count))]
@@ -752,7 +757,7 @@ public class WasmBridge {
 
             guard let result = try self.webviewForPlugin({ module in
                 try await module.executeJs(script: scriptString)
-            }) else { return [.i32(0)] }
+            }) else { return [.i32(Self.noWebviewResult)] }
             let responseBytes = Array(result.utf8)
             self.pendingWebviewResponseBytes = responseBytes
             return [.i32(UInt32(responseBytes.count))]
