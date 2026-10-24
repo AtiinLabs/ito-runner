@@ -60,6 +60,19 @@ belong to the host; never infer opaque unit keys from numbered progress, or sile
 queued writes against changed source/account settings. Both argument buffers are freed on
 success, failure, and traps; the scalar acknowledgement allocates no response buffer.
 
+### Settings diagnostics
+
+`getSettingsActions()` discovers optional diagnostic buttons, `runSettingsAction(_:)`
+runs an explicitly selected action, and `validateSettings()` returns advisory issues
+keyed by setting ID (empty key for a form-level issue). Missing or Unsupported exports
+return `nil`; successful empty arrays or strings remain empty, and other typed failures
+throw. The existing settings schema and ABI 1 are unchanged.
+
+Run diagnostics against a temporary settings snapshot, including unsaved secret drafts
+when appropriate. Never persist action writes or log setting values. Actions must be
+non-destructive and must not require interactive login. Validation is local-only, without
+network access or writes, and must not block saving incomplete settings.
+
 ### Runner lifetime
 
 The bridge keeps a weak runner reference, breaking the loaded-runner retain cycle. Dropping

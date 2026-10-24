@@ -526,6 +526,37 @@ public actor ItoRunner {
         }
     }
 
+    /// Optional settings diagnostics. An empty array means none are declared; nil means unsupported.
+    public func getSettingsActions() async throws -> [SettingsAction]? {
+        try await performSerialized {
+            guard self.isExported("get_settings_actions"),
+                let bytes = try self.callOptional("get_settings_actions")
+            else { return nil }
+            return try self.postcardDecoder.decode([SettingsAction].self, from: bytes)
+        }
+    }
+
+    /// Runs an explicitly requested diagnostic. Hosts must provide temporary settings and must not
+    /// persist writes made during the action. An empty success message is distinct from unsupported.
+    public func runSettingsAction(_ actionID: String) async throws -> String? {
+        try await performSerialized {
+            guard self.isExported("run_settings_action"),
+                let bytes = try self.callOptional("run_settings_action", [.bytes(Array(actionID.utf8))])
+            else { return nil }
+            return try self.postcardDecoder.decode(String.self, from: bytes)
+        }
+    }
+
+    /// Advisory local-only validation. Empty means valid; nil means validation isn't implemented.
+    public func validateSettings() async throws -> [SettingIssue]? {
+        try await performSerialized {
+            guard self.isExported("validate_settings"),
+                let bytes = try self.callOptional("validate_settings")
+            else { return nil }
+            return try self.postcardDecoder.decode([SettingIssue].self, from: bytes)
+        }
+    }
+
     /// Executes `handle_url()` if exported by the plugin. Nil when the plugin doesn't handle the URL.
     public func handleUrl(_ url: String) async throws -> LinkValue? {
         return try await performSerialized {
