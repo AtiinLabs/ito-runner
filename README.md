@@ -63,7 +63,7 @@ persisting them with the logical image locator.
 ### Completion notifications
 
 `markCompleted(kind:mediaKey:unitKey:)` calls the optional completion export with
-the plugin's opaque keys. They return `true` only for an acknowledgement;
+the plugin's opaque keys. It returns `true` only for an acknowledgement;
 absent or unsupported/unhandled exports return `false`, while refusals and traps throw.
 Malformed signatures and acknowledgement values also throw.
 
