@@ -14,9 +14,6 @@ public actor ItoRunner {
     private var memory: Memory?
     private var errorProtocolVersion: UInt32 = 1
 
-    /// The Object Bridge Registry, used to securely store Swift objects and pass their integer IDs to Wasm.
-    public let registry: DescriptorRegistry
-
     /// The custom Postcard Serialization encoder and decoder.
     nonisolated public let postcardEncoder = ItoPostcardEncoder()
     nonisolated public let postcardDecoder = ItoPostcardDecoder()
@@ -26,11 +23,9 @@ public actor ItoRunner {
 
     public var netModule: NetModule?
     public var htmlModule: HtmlModule?
-    public var jsModule: JsModule?
     public var stdModule: StdModule?
     public var defaultsModule: DefaultsModule?
     public var envModule: EnvModule?
-    public var uiModule: UiModule?
     public var webviewModule: WebviewModule?
 
     private let executionQueue = DispatchQueue(label: "moe.itoapp.runner.execution")
@@ -75,17 +70,13 @@ public actor ItoRunner {
     }
 
     /// Initializes a new runner instance.
-    public init() {
-        self.registry = DescriptorRegistry()
-    }
+    public init() {}
 
     public func setNetModule(_ module: NetModule) { self.netModule = module }
     public func setHtmlModule(_ module: HtmlModule) { self.htmlModule = module }
-    public func setJsModule(_ module: JsModule) { self.jsModule = module }
     public func setStdModule(_ module: StdModule) { self.stdModule = module }
     public func setDefaultsModule(_ module: DefaultsModule) { self.defaultsModule = module }
     public func setEnvModule(_ module: EnvModule) { self.envModule = module }
-    public func setUiModule(_ module: UiModule) { self.uiModule = module }
     public func setWebviewModule(_ module: WebviewModule) { self.webviewModule = module }
 
     /// Sets how long host work may block a plugin call, for plugins loaded afterwards.
@@ -137,11 +128,9 @@ public actor ItoRunner {
             let bridge = WasmBridge(runner: self)
             bridge.netModule = self.netModule
             bridge.htmlModule = self.htmlModule
-            bridge.jsModule = self.jsModule
             bridge.stdModule = self.stdModule
             bridge.defaultsModule = self.defaultsModule
             bridge.envModule = self.envModule
-            bridge.uiModule = self.uiModule
             bridge.webviewModule = self.webviewModule
             bridge.timeouts = self.hostCallTimeouts
             let importTable = bridge.buildImportTable(store: store)
@@ -498,24 +487,6 @@ public actor ItoRunner {
         }
     }
 
-    /// Executes `get_home_stream()` and returns true if it pushed components directly.
-    public func getHomeStream() async throws -> Bool {
-        return try await performSerialized {
-            guard self.isExported("get_home_stream") else { return false }
-
-            self.bridge?.beginCall("get_home_stream")
-            let result = try self.executeExport("get_home_stream")
-            guard let resultVal = result.first, case .i32(let ret) = resultVal else {
-                throw ItoError.wasmTrap("Expected i32 response from get_home_stream")
-            }
-            if ret == 0, let reported = try self.reportedFailure() {
-                throw ItoError.pluginFailed(
-                    function: "get_home_stream", reason: reported.reason, category: reported.category)
-            }
-            return ret != 0
-        }
-    }
-
     /// Executes `get_settings()` if exported by the plugin. Nil when the plugin has no settings.
     public func getSettings() async throws -> SettingsSchema? {
         return try await performSerialized {
@@ -647,7 +618,7 @@ public actor ItoRunner {
 
     // MARK: - Manga Exports
 
-    /// Executes `get_search_manga_list(query: String, page: Int32, filters: [FilterStruct])`
+    /// Executes `get_search_manga_list(query: String, page: Int32, filters: [FilterItem])`
     public func getSearchMangaList(query: String, page: Int32, filters: [FilterItem]?) async throws
         -> Manga.PageResult {
         return try await performSerialized {
@@ -687,7 +658,7 @@ public actor ItoRunner {
 
     // MARK: - Anime Exports
 
-    /// Executes `get_search_anime_list(query: String, page: Int32, filters: [FilterStruct])`
+    /// Executes `get_search_anime_list(query: String, page: Int32, filters: [FilterItem])`
     public func getSearchAnimeList(query: String, page: Int32, filters: [FilterItem]?) async throws
         -> Anime.PageResult {
         return try await performSerialized {
@@ -727,7 +698,7 @@ public actor ItoRunner {
 
     // MARK: - Novel Exports
 
-    /// Executes `get_search_novel_list(query: String, page: Int32, filters: [FilterStruct])`
+    /// Executes `get_search_novel_list(query: String, page: Int32, filters: [FilterItem])`
     public func getSearchNovelList(query: String, page: Int32, filters: [FilterItem]?) async throws
         -> Novel.PageResult {
         return try await performSerialized {
