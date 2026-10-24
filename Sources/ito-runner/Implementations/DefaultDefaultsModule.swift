@@ -17,6 +17,11 @@ public final class DefaultDefaultsModule: DefaultsModule, @unchecked Sendable {
         defaults.set(value, forKey: key)
     }
 
+    /// The standalone runner has no secure store: tokens are kept like any other value.
+    public func setSecret(key: String, value: String) {
+        set(key: key, value: value)
+    }
+
     public func get(key: String) -> String? {
         return defaults.string(forKey: key)
     }

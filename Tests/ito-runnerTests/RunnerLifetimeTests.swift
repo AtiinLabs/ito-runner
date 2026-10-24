@@ -12,6 +12,7 @@ private final class LifetimeDefaults: DefaultsModule, @unchecked Sendable {
     deinit { released?() }
     func get(key: String) -> String? { lock.withLock { values[key] } }
     func set(key: String, value: String) { lock.withLock { values[key] = value } }
+    func setSecret(key: String, value: String) { set(key: key, value: value) }
     func remove(key: String) { lock.withLock { _ = values.removeValue(forKey: key) } }
 }
 

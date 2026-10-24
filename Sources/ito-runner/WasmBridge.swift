@@ -563,37 +563,11 @@ public class WasmBridge {
             return []
         }
 
-        let defaultsSet = Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: []) {
-            [weak self] caller, args in
-            guard let self = self else { return [] }
-            let keyPtr = args[0].i32
-            let keyLen = args[1].i32
-            let valPtr = args[2].i32
-            let valLen = args[3].i32
-
-            guard let memory = caller.instance?.exports[memory: "memory"] else {
-                throw ItoError.wasmTrap("Plugin must export memory")
-            }
-
-            let key = memory.withUnsafeMutableBufferPointer(
-                offset: UInt(keyPtr), count: Int(keyLen)
-            ) { buffer in
-                String(decoding: buffer, as: UTF8.self)
-            }
-
-            let val = memory.withUnsafeMutableBufferPointer(
-                offset: UInt(valPtr), count: Int(valLen)
-            ) { buffer in
-                String(decoding: buffer, as: UTF8.self)
-            }
-
-            guard let module = self.defaultsModule else {
-                throw ItoError.hostModuleError(
-                    domain: "defaults", message: "DefaultsModule not provided")
-            }
-
-            module.set(key: key, value: val)
-            return []
+        let defaultsSet = defaultsWrite(store: store) { module, key, value in
+            module.set(key: key, value: value)
+        }
+        let defaultsSetSecret = defaultsWrite(store: store) { module, key, value in
+            module.setSecret(key: key, value: value)
         }
 
         let defaultsGet = Function(store: store, parameters: [.i32, .i32], results: [.i64]) {
@@ -794,7 +768,8 @@ public class WasmBridge {
             "ito:core/defaults": [
                 "set": defaultsSet,
                 "get": defaultsGet,
-                "remove": defaultsRemove
+                "remove": defaultsRemove,
+                "set_secret": defaultsSetSecret
             ],
             "ito:core/env": [
                 "get_languages": envGetLanguages
@@ -805,5 +780,36 @@ public class WasmBridge {
                 "webview_read_result": webviewReadResult
             ]
         ]
+    }
+
+    /// A `(key, value)` defaults import: reads both strings from the plugin's memory and hands
+    /// them to `write` with the defaults module.
+    private func defaultsWrite(
+        store: Store,
+        _ write: @escaping (any DefaultsModule, String, String) -> Void
+    ) -> Function {
+        Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: []) {
+            [weak self] caller, args in
+            guard let self = self else { return [] }
+            guard let memory = caller.instance?.exports[memory: "memory"] else {
+                throw ItoError.wasmTrap("Plugin must export memory")
+            }
+            let key = memory.withUnsafeMutableBufferPointer(
+                offset: UInt(args[0].i32), count: Int(args[1].i32)
+            ) { buffer in
+                String(decoding: buffer, as: UTF8.self)
+            }
+            let value = memory.withUnsafeMutableBufferPointer(
+                offset: UInt(args[2].i32), count: Int(args[3].i32)
+            ) { buffer in
+                String(decoding: buffer, as: UTF8.self)
+            }
+            guard let module = self.defaultsModule else {
+                throw ItoError.hostModuleError(
+                    domain: "defaults", message: "DefaultsModule not provided")
+            }
+            write(module, key, value)
+            return []
+        }
     }
 }

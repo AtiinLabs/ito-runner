@@ -56,6 +56,9 @@ public protocol StdModule: Sendable {
 
 public protocol DefaultsModule: Sendable {
     func set(key: String, value: String)
+    /// Stores a value the plugin obtained itself (a token) where the host keeps credentials, never
+    /// in backups. `get` returns it; `remove` deletes it.
+    func setSecret(key: String, value: String)
     func get(key: String) -> String?
     func remove(key: String)
 }
