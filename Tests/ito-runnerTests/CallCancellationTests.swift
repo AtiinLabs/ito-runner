@@ -162,7 +162,7 @@ struct HostWorkWaitTests {
         bridge.timeouts = HostCallTimeouts(net: 0.05, webview: 0.05)
 
         let response = try await onRunnerQueue { [request] in
-            bridge.fetchForPlugin(request, options: nil, label: "net_fetch")
+            bridge.fetchForPlugin(request, label: "net_fetch")
         }
 
         #expect(response.status == 500)
@@ -182,7 +182,7 @@ struct HostWorkWaitTests {
         bridge.netModule = Spoofing()
 
         let response = try await onRunnerQueue { [request] in
-            bridge.fetchForPlugin(request, options: nil, label: "net_fetch")
+            bridge.fetchForPlugin(request, label: "net_fetch")
         }
 
         #expect(response.status == 200)
@@ -199,7 +199,7 @@ struct HostWorkWaitTests {
         bridge.activeCallToken = token
 
         let response = Task { [request] in
-            try await onRunnerQueue { bridge.fetchForPlugin(request, options: nil, label: "net_fetch_v2") }
+            try await onRunnerQueue { bridge.fetchForPlugin(request, label: "net_fetch_v2") }
         }
         await net.requestStarted()
         token.cancel()

@@ -115,14 +115,11 @@ public class WasmBridge {
     /// Runs a plugin's network request on the net module and waits for it. A failure, a
     /// cancelled call or a request past the watchdog deadline reaches the plugin as a 500
     /// response it handles like any server error, so its export finishes normally.
-    func fetchForPlugin(_ request: NetRequest, options: NetOptions?, label: String) -> NetResponse {
+    func fetchForPlugin(_ request: NetRequest, label: String) -> NetResponse {
         let module = netModule
         let outcome = waitForHostWork(timeout: timeouts.net) { () async throws -> NetResponse in
             guard let module else {
                 throw ItoError.hostModuleError(domain: "net", message: "NetModule not provided")
-            }
-            if let options {
-                return try await module.fetch(request: request, options: options)
             }
             return try await module.fetch(request: request)
         }
@@ -239,7 +236,7 @@ public class WasmBridge {
             } catch {
                 throw ItoError.wasmTrap("Failed to decode NetRequest: \(error)")
             }
-            let response = self.fetchForPlugin(request, options: nil, label: "net_fetch")
+            let response = self.fetchForPlugin(request, label: "net_fetch")
             do {
                 let responseBytes = try self.postcardEncoder.encode(response)
                 self.pendingNetResponseBytes = responseBytes
@@ -249,13 +246,13 @@ public class WasmBridge {
             }
         }
 
+        // The options argument is reserved (the SDK's `NetOptions`): no host acts on it, so it is
+        // not read.
         let netFetchV2 = Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) {
             [weak self] caller, args in
             guard let self = self else { return [] }
             let requestPtr = args[0].i32
             let requestLen = args[1].i32
-            let optPtr = args[2].i32
-            let optLen = args[3].i32
 
             guard let memory = caller.instance?.exports[memory: "memory"] else {
                 throw ItoError.wasmTrap("Plugin must export linear memory")
@@ -265,19 +262,13 @@ public class WasmBridge {
                 offset: UInt(requestPtr), count: Int(requestLen)
             ) { buffer in Array(buffer) }
 
-            let optBytes = memory.withUnsafeMutableBufferPointer(
-                offset: UInt(optPtr), count: Int(optLen)
-            ) { buffer in Array(buffer) }
-
             let request: NetRequest
-            let options: NetOptions
             do {
                 request = try self.postcardDecoder.decode(NetRequest.self, from: requestBytes)
-                options = try self.postcardDecoder.decode(NetOptions.self, from: optBytes)
             } catch {
                 throw ItoError.wasmTrap("Failed to decode NetRequest: \(error)")
             }
-            let response = self.fetchForPlugin(request, options: options, label: "net_fetch_v2")
+            let response = self.fetchForPlugin(request, label: "net_fetch_v2")
             do {
                 let responseBytes = try self.postcardEncoder.encode(response)
                 self.pendingNetResponseBytes = responseBytes
