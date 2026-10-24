@@ -17,6 +17,7 @@ final class MockDefaultsModule: DefaultsModule, Sendable {
     // using a non-isolated locked state or just mocking isolated behavior.
     // For test simplicity, we just return fixed values
     func set(key: String, value: String) {}
+    func setSecret(key: String, value: String) {}
     func get(key: String) -> String? {
         if key == "test_key" {
             return "test_val"
@@ -26,8 +27,46 @@ final class MockDefaultsModule: DefaultsModule, Sendable {
     func remove(key: String) {}
 }
 
+/// Records which defaults call stored each value.
+final class RecordingDefaultsModule: DefaultsModule, @unchecked Sendable {
+    private let lock = NSLock()
+    private var plain: [String: String] = [:]
+    private var secret: [String: String] = [:]
+
+    func set(key: String, value: String) { lock.withLock { plain[key] = value } }
+    func setSecret(key: String, value: String) { lock.withLock { secret[key] = value } }
+    func get(key: String) -> String? { lock.withLock { secret[key] ?? plain[key] } }
+    func remove(key: String) {}
+
+    var plainValues: [String: String] { lock.withLock { plain } }
+    var secretValues: [String: String] { lock.withLock { secret } }
+}
+
 @Suite("Host Modules - Misc")
 struct HostModuleMiscTests {
+
+    @Test func aSecretWriteReachesOnlyTheSecureStore() async throws {
+        let wat = """
+            (module
+                (import "ito:core/defaults" "set_secret" (func $set_secret (param i32 i32 i32 i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 16) "tok")
+                (data (i32.const 32) "abc")
+                (func (export "alloc") (param i32) (result i32) (i32.const 1024))
+                (func (export "store_token")
+                    (call $set_secret (i32.const 16) (i32.const 3) (i32.const 32) (i32.const 3)))
+            )
+            """
+        let defaults = RecordingDefaultsModule()
+        let runner = ItoRunner()
+        await runner.setDefaultsModule(defaults)
+        try await runner.loadPlugin(fromBytes: try wat2wasm(wat))
+
+        _ = try await runner.executeExport("store_token", args: [])
+
+        #expect(defaults.secretValues == ["tok": "abc"])
+        #expect(defaults.plainValues.isEmpty)
+    }
 
     @Test("DefaultsModule Get FFI Bridge")
     func testDefaultsGetFFI() async throws {
