@@ -14,7 +14,6 @@ private func makeRunner() async throws -> ItoRunner {
     await runner.setNetModule(DefaultNetModule())
     await runner.setStdModule(DefaultStdModule())
     await runner.setHtmlModule(DefaultHtmlModule())
-    await runner.setJsModule(DefaultJsModule())
     _ = try await runner.loadBundle(from: wasmPath)
     return runner
 }

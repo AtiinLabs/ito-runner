@@ -9,9 +9,6 @@ public enum ItoError: LocalizedError, Equatable {
     /// Attempted to read or write memory outside the allocated bounds of the Wasm linear memory.
     case memoryOutOfBounds(offset: Int, length: Int, memorySize: Int)
 
-    /// An invalid descriptor ID was passed from Wasm to Swift.
-    case invalidDescriptor(id: UInt32)
-
     /// Failed to decode a Postcard payload.
     case postcardDecodingError(String)
 
@@ -40,8 +37,6 @@ public enum ItoError: LocalizedError, Equatable {
         case .memoryOutOfBounds(let offset, let length, let memorySize):
             return
                 "Wasm memory access out of bounds at offset \(offset) with length \(length) (Memory size: \(memorySize))"
-        case .invalidDescriptor(let id):
-            return "Wasm plugin provided an invalid resource descriptor ID: \(id)"
         case .postcardDecodingError(let message):
             return "Failed to decode Wasm memory using Postcard format: \(message)"
         case .postcardEncodingError(let message):
@@ -67,7 +62,6 @@ public enum ItoError: LocalizedError, Equatable {
             .memoryOutOfBounds(let l1, let l2, let l3), .memoryOutOfBounds(let r1, let r2, let r3)
         ):
             return l1 == r1 && l2 == r2 && l3 == r3
-        case (.invalidDescriptor(let l), .invalidDescriptor(let r)): return l == r
         case (.postcardDecodingError(let l), .postcardDecodingError(let r)): return l == r
         case (.postcardEncodingError(let l), .postcardEncodingError(let r)): return l == r
         case (.hostModuleError(let l1, let l2), .hostModuleError(let r1, let r2)):

@@ -63,12 +63,6 @@ public protocol HtmlModule: Sendable {
     func clear()
 }
 
-// MARK: - JS Module
-
-public protocol JsModule: Sendable {
-    func evaluate(script: String) throws -> String
-}
-
 // MARK: - Std Module
 
 public protocol StdModule: Sendable {
@@ -87,12 +81,6 @@ public protocol DefaultsModule: Sendable {
 
 public protocol EnvModule: Sendable {
     func getLanguages() -> [String]
-}
-
-// MARK: - Ui Module
-
-public protocol UiModule: Sendable {
-    func pushHomeComponent(_ component: HomeComponent)
 }
 
 // MARK: - Webview Module

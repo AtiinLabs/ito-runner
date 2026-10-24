@@ -7,27 +7,6 @@ import WasmKit
 
 @Suite("Ito Runner - Main API Tests")
 struct ItoRunnerMainTests {
-    @Test("Runner Initialization")
-    func testInitialization() async throws {
-        let runner = ItoRunner()
-
-        let net = DefaultNetModule()
-        let html = DefaultHtmlModule()
-        let js = DefaultJsModule()
-        let std = DefaultStdModule()
-        let defaults = DefaultDefaultsModule(pluginId: "test.plugin")
-
-        await runner.setNetModule(net)
-        await runner.setHtmlModule(html)
-        await runner.setJsModule(js)
-        await runner.setStdModule(std)
-        await runner.setDefaultsModule(defaults)
-
-        // Assertions checking they were set correctly could go here,
-        // but compile-time type safety proves the setters work.
-        #expect(await runner.netModule != nil)
-    }
-
     @Test("Load Basic Plugin and Execute Export")
     func testLoadAndExecute() async throws {
         // A minimal WAT that exports 'alloc' and 'memory'

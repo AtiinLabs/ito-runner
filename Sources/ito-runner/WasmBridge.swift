@@ -15,11 +15,9 @@ public class WasmBridge {
     // Dependencies
     public var netModule: NetModule?
     public var htmlModule: HtmlModule?
-    public var jsModule: JsModule?
     public var stdModule: StdModule?
     public var defaultsModule: DefaultsModule?
     public var envModule: EnvModule?
-    public var uiModule: UiModule?
     public var webviewModule: WebviewModule?
 
     private var pendingNetResponseBytes: [UInt8]?
@@ -543,50 +541,6 @@ public class WasmBridge {
             return [.i64((UInt64(responsePtr) << 32) | UInt64(UInt32(responseBytes.count)))]
         }
 
-        let jsEvaluate = Function(store: store, parameters: [.i32, .i32], results: [.i64]) {
-            [weak self] caller, args in
-            guard let self = self else { return [] }
-            let requestPtr = args[0].i32
-            let requestLen = args[1].i32
-
-            guard let memory = caller.instance?.exports[memory: "memory"],
-                let alloc = caller.instance?.exports[function: "alloc"]
-            else {
-                throw ItoError.wasmTrap("Plugin must export memory and alloc")
-            }
-
-            let scriptString = memory.withUnsafeMutableBufferPointer(
-                offset: UInt(requestPtr), count: Int(requestLen)
-            ) { buffer in
-                String(decoding: buffer, as: UTF8.self)
-            }
-
-            guard let module = self.jsModule else {
-                throw ItoError.hostModuleError(domain: "js", message: "JsModule not provided")
-            }
-
-            let resultString = try module.evaluate(script: scriptString)
-            let responseBytes = try self.postcardEncoder.encode(resultString)
-
-            let allocResult = try alloc([.i32(UInt32(responseBytes.count))])
-            let responsePtr = allocResult[0].i32
-
-            guard let refetchedMemory = caller.instance?.exports[memory: "memory"] else {
-                throw ItoError.wasmTrap("Memory lost after alloc")
-            }
-
-            refetchedMemory.withUnsafeMutableBufferPointer(
-                offset: UInt(responsePtr), count: responseBytes.count
-            ) { buffer in
-                responseBytes.withUnsafeBytes { src in
-                    buffer.copyMemory(from: UnsafeRawBufferPointer(src))
-                }
-            }
-
-            let packed = (UInt64(responsePtr) << 32) | UInt64(UInt32(responseBytes.count))
-            return [.i64(packed)]
-        }
-
         let stdprint = Function(store: store, parameters: [.i32, .i32], results: []) {
             [weak self] caller, args in
             guard let self = self else { return [] }
@@ -753,29 +707,6 @@ public class WasmBridge {
             return [.i64(packed)]
         }
 
-        let uiPushHomeComponent = Function(store: store, parameters: [.i32, .i32], results: []) {
-            [weak self] caller, args in
-            guard let self = self else { return [] }
-            let ptr = args[0].i32
-            let len = args[1].i32
-
-            guard let memory = caller.instance?.exports[memory: "memory"] else {
-                throw ItoError.wasmTrap("Plugin must export memory")
-            }
-
-            let compBytes = memory.withUnsafeMutableBufferPointer(
-                offset: UInt(ptr), count: Int(len)
-            ) { buffer in
-                Array(buffer)
-            }
-
-            // Decode and push
-            if let comp = try? self.postcardDecoder.decode(HomeComponent.self, from: compBytes) {
-                self.uiModule?.pushHomeComponent(comp)
-            }
-            return []
-        }
-
         let webviewLoadUrl = Function(store: store, parameters: [.i32, .i32], results: [.i32]) {
             [weak self] caller, args in
             guard let self = self else { return [] }
@@ -863,7 +794,6 @@ public class WasmBridge {
                 "html_content": htmlHtmlContent,
                 "outer_html": htmlOuterHtml
             ],
-            "ito:core/js": ["evaluate": jsEvaluate],
             "ito:core/std": ["print": stdprint],
             "ito:core/defaults": [
                 "set": defaultsSet,
@@ -872,9 +802,6 @@ public class WasmBridge {
             ],
             "ito:core/env": [
                 "get_languages": envGetLanguages
-            ],
-            "ito:core/ui": [
-                "push_home_component": uiPushHomeComponent
             ],
             "ito:core/webview": [
                 "webview_load_url": webviewLoadUrl,

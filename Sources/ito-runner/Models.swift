@@ -418,19 +418,14 @@ public struct Page: Codable, Sendable {
 public struct Listing: Codable, Sendable {
     public var id: String
     public var name: String
-    public var kind: Int32  // Enum ListingKind
+    /// Reserved; hosts pass it back to the plugin unchanged.
+    public var kind: Int32
 
     public init(id: String, name: String, kind: Int32) {
         self.id = id
         self.name = name
         self.kind = kind
     }
-}
-
-public struct FilterStruct: Codable, Sendable {
-    public let type: String
-    public let name: String
-    public let value: FilterValue
 }
 
 public enum FilterValue: Codable, Sendable, PostcardEnumMarker {

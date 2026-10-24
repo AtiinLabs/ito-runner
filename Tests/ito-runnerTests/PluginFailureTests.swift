@@ -13,8 +13,7 @@ struct PluginFailureTests {
         (128, "Error in handle_image: Host error: Refused path"),
         (256, "Error in handle_url: Unsupported operation"),
         (384, "Error in parse: no title on the page"),
-        (512, "Deserialization error: unexpected end of input"),
-        (640, "Error in get_home_stream: Host error: Stream failed")
+        (512, "Deserialization error: unexpected end of input")
     ]
 
     private static func printCall(_ index: Int) -> String {
@@ -61,9 +60,6 @@ struct PluginFailureTests {
             (func (export "get_settings") (result i64)
                 \(printCall(3))
                 i64.const 0)
-            (func (export "get_home_stream") (result i32)
-                \(printCall(5))
-                i32.const 0)
             (func (export "handle_url") (param i32 i32) (result i64)
                 \(printCall(2))
                 i64.const 0)
@@ -145,14 +141,6 @@ struct PluginFailureTests {
 
         await #expect(throws: ItoError.pluginFailed(function: "handle_image", reason: "Host error: Refused path")) {
             try await runner.handleImage("../../etc")
-        }
-    }
-
-    @Test func aFailedHomeStreamReportsThePluginsReason() async throws {
-        let runner = try await loadRunner()
-
-        await #expect(throws: ItoError.pluginFailed(function: "get_home_stream", reason: "Host error: Stream failed")) {
-            try await runner.getHomeStream()
         }
     }
 
