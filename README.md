@@ -26,10 +26,23 @@ await runner.setHtmlModule(DefaultHtmlModule())
 await runner.setStdModule(DefaultStdModule())
 
 let manifest = try await runner.loadBundle(from: pluginURL)
-let results = try await runner.getSearchMangaList(query: "frieren", page: 1, filters: nil)
+let results = try await runner.search(query: "frieren", page: 1, kind: .manga)
 ```
 
 The default modules cover tests and simple hosts; Ito provides its own implementations of the host module protocols in `HostModules.swift`.
+
+### Kinds
+
+A plugin serves one or more `MediaKind`s (manga, anime, novel): `supportedKinds` after
+loading, or `PluginInfo.supportedKinds` from its manifest. Catalog calls are kind-neutral:
+`getListing`, `search(query:page:kind:)` (nil searches every kind the plugin serves; a kind
+it doesn't serve finds nothing without calling it), `getMediaUpdate`, `getChapterPages`,
+`getEpisodeVideos`. Entries are `MediaEntry` values; an update returns the same kind.
+
+Each chapter's `ContentKind` says how it is read: `images` in a page reader, `text` in a
+text reader that shows image pages inline. Chapters from plugins built for ABI 1, or stored
+before kinds existed, have no kind; `MediaEntry.contentKind(of:)` reads them as their entry's
+kind says (manga as images, novels as text). The runner runs ABI 1 and ABI 2 plugins.
 
 ### Native image requests
 
@@ -49,9 +62,8 @@ persisting them with the logical image locator.
 
 ### Completion notifications
 
-`markChapterRead(mediaKey:chapterKey:)` (manga or novel) and
-`markEpisodeWatched(mediaKey:episodeKey:)` call optional completion exports with
-the plugin's opaque keys. They return `true` only for an acknowledgement;
+`markCompleted(kind:mediaKey:unitKey:)` calls the optional completion export with
+the plugin's opaque keys. It returns `true` only for an acknowledgement;
 absent or unsupported/unhandled exports return `false`, while refusals and traps throw.
 Malformed signatures and acknowledgement values also throw.
 

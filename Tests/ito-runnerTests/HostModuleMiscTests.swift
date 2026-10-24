@@ -137,7 +137,7 @@ struct HostModuleMiscTests {
         let responseBytes = try await runner.readMemory(
             offset: Int(responsePtr), length: Int(responseLen))
 
-        let resultString = try runner.postcardDecoder.decode(String?.self, from: responseBytes)
+        let resultString = try ItoPostcardDecoder().decode(String?.self, from: responseBytes)
         #expect(resultString == "test_val")
     }
 }

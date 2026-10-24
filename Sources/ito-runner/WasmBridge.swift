@@ -9,8 +9,9 @@ import WasmKit
 public class WasmBridge {
 
     private weak var runner: ItoRunner?
-    private let postcardEncoder: ItoPostcardEncoder
-    private let postcardDecoder: ItoPostcardDecoder
+    /// Host-module payloads have the same layout in every ABI.
+    private let postcardEncoder = ItoPostcardEncoder()
+    private let postcardDecoder = ItoPostcardDecoder()
 
     // Dependencies
     public var netModule: NetModule?
@@ -32,8 +33,6 @@ public class WasmBridge {
 
     public init(runner: ItoRunner) {
         self.runner = runner
-        self.postcardEncoder = runner.postcardEncoder
-        self.postcardDecoder = runner.postcardDecoder
     }
 
     /// Reads and decodes a Postcard struct from Wasm memory

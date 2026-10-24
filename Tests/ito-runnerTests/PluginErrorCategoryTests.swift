@@ -65,7 +65,7 @@ struct PluginErrorCategoryTests {
                 i32.const 37
                 call $print
                 i64.const 0)
-            (func (export "get_anime_list") (param i32 i32 i32) (result i64)
+            (func (export "handle_url") (param i32 i32) (result i64)
                 ;; (2200 << 32) | 10
                 i64.const 9448928051210
                 global.set $lastError
@@ -118,9 +118,9 @@ struct PluginErrorCategoryTests {
         let runner = try await loadRunner()
 
         await #expect(throws: ItoError.pluginFailed(
-            function: "get_anime_list", reason: "Sign in!", category: .needsLogin
+            function: "handle_url", reason: "Sign in!", category: .needsLogin
         )) {
-            try await runner.getAnimeList(listing: Listing(id: "all", name: "All", kind: 0), page: 1)
+            try await runner.handleUrl("https://example.com/series/1")
         }
     }
 

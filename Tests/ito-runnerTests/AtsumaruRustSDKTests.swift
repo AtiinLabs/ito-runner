@@ -119,7 +119,7 @@ struct AtsumaruRustSDKTests {
         let runner = try await loadRunner()
 
         let query = "Estate"
-        let result = try await runner.getSearchMangaList(query: query, page: 1, filters: nil)
+        let result = try await runner.getSearchMangaList(query: query, page: 1)
 
         RunnerLogger.core.debug("\("Search fetched \(result.entries.count)") mangas")
         #expect(result.entries.count > 0, "Search results should not be empty")

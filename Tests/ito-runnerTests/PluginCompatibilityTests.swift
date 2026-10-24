@@ -44,15 +44,19 @@ struct PluginCompatibilityTests {
     }
 
     @Test func aPluginBuiltForANewerABIIsRefused() async throws {
-        let wasm = try plugin(#"(func (export "ito_abi_version") (result i32) i32.const 2)"#)
+        let wasm = try plugin(#"(func (export "ito_abi_version") (result i32) i32.const 3)"#)
 
-        await #expect(throws: ItoError.unsupportedABI(version: 2, supported: 1...1)) {
+        await #expect(throws: ItoError.unsupportedABI(version: 3, supported: 1...2)) {
             try await ItoRunner().loadPlugin(fromBytes: wasm)
         }
     }
 
     @Test func pluginsForThisABIAndPluginsFromBeforeTheExportStillRun() async throws {
         for wasm in [
+            try plugin(#"""
+                (func (export "ito_abi_version") (result i32) i32.const 2)
+                (func (export "ito_supported_kinds") (result i32) i32.const 1)
+                """#),
             try plugin(#"(func (export "ito_abi_version") (result i32) i32.const 1)"#),
             try plugin("")
         ] {
