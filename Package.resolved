@@ -87,7 +87,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/AtiinLabs/WasmKit.git",
       "state" : {
-        "revision" : "1afefceb8535c56c9e011532ba31c433233f4348"
+        "revision" : "c76d7ea351c10480c6473ab522fdc1b622ed9432"
       }
     },
     {

@@ -68,6 +68,34 @@ struct HostModuleMiscTests {
         #expect(defaults.plainValues.isEmpty)
     }
 
+    /// `defaults.get` hands its answer back through the plugin's `alloc`. When that allocation is
+    /// what grows the plugin's memory, the export that asked must keep running against the grown
+    /// memory instead of trapping on a stale bound.
+    @Test func aValueReturnedThroughAGrowingAllocationReachesThePlugin() async throws {
+        let wat = """
+            (module
+                (import "ito:core/defaults" "get" (func $get (param i32 i32) (result i64)))
+                (memory (export "memory") 1)
+                (data (i32.const 16) "test_key")
+                ;; Grows memory by a page and hands out an address only reachable after growing.
+                (func (export "alloc") (param i32) (result i32)
+                    (drop (memory.grow (i32.const 1)))
+                    (i32.const 70000))
+                (func (export "dealloc") (param i32 i32))
+                ;; Returns the first byte of the answer (1 = Some).
+                (func (export "read_first_byte") (result i32)
+                    (i32.load8_u (i32.wrap_i64 (i64.shr_u (call $get (i32.const 16) (i32.const 8)) (i64.const 32)))))
+            )
+            """
+        let runner = ItoRunner()
+        await runner.setDefaultsModule(MockDefaultsModule())
+        try await runner.loadPlugin(fromBytes: try wat2wasm(wat))
+
+        let result = try await runner.executeExport("read_first_byte", args: [])
+
+        #expect(result == [.i32(1)])
+    }
+
     @Test("DefaultsModule Get FFI Bridge")
     func testDefaultsGetFFI() async throws {
         let wat = """
