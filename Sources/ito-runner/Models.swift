@@ -48,10 +48,23 @@ public enum MediaKind: String, Codable, Sendable, CaseIterable {
 
 /// How a chapter is read, whatever its entry's kind: `images` in the page reader, `text` in the
 /// text reader, which lays out text pages and shows image pages inline. Matches the SDK's
-/// `ContentKind`.
-public enum ContentKind: Int32, Codable, Sendable, PostcardEnumMarker {
-    case images = 0
-    case text = 1
+/// `ContentKind`; stored by name, sent to plugins by `wireValue`.
+public enum ContentKind: String, Codable, Sendable, CaseIterable {
+    case images
+    case text
+
+    /// The SDK's `ContentKind` value, as plugins lay it out.
+    public var wireValue: Int32 {
+        switch self {
+        case .images: return 0
+        case .text: return 1
+        }
+    }
+
+    public init?(wireValue: Int32) {
+        guard let kind = Self.allCases.first(where: { $0.wireValue == wireValue }) else { return nil }
+        self = kind
+    }
 }
 
 /// A native image fetch resolved by a plugin. Hosts authorize the URL against the plugin's
@@ -300,7 +313,12 @@ public struct Chapter: Codable, Sendable, Identifiable {
         paywalled = try container.decodeIfPresent(Bool.self, forKey: .paywalled)
         switch decoder.userInfo[postcardABIVersionKey] as? Int {
         case 1?: kind = nil
-        case .some: kind = try container.decode(ContentKind.self, forKey: .kind)
+        case .some:
+            let value = try container.decode(Int32.self, forKey: .kind)
+            guard let decoded = ContentKind(wireValue: value) else {
+                throw ItoError.postcardDecodingError("Unknown chapter kind \(value)")
+            }
+            kind = decoded
         case nil: kind = try container.decodeIfPresent(ContentKind.self, forKey: .kind)
         }
     }
@@ -324,7 +342,7 @@ public struct Chapter: Codable, Sendable, Identifiable {
             guard let kind else {
                 throw ItoError.postcardEncodingError("A chapter sent to the plugin has no kind.")
             }
-            try container.encode(kind, forKey: .kind)
+            try container.encode(kind.wireValue, forKey: .kind)
         case nil:
             try container.encodeIfPresent(kind, forKey: .kind)
         }

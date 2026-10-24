@@ -19,8 +19,10 @@ struct ContentKindTests {
     }
 
     /// A plugin that answers every catalog call with an empty result and records its arguments.
-    /// `extra` holds ABI-specific exports.
-    private func plugin(_ extra: String, update: [UInt8] = [0]) async throws -> ItoRunner {
+    /// `extra` holds ABI-specific exports; `buffers` places fixed results at the given addresses.
+    private func plugin(
+        _ extra: String, update: [UInt8] = [0], buffers: [(Int, [UInt8])] = []
+    ) async throws -> ItoRunner {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: wat2wasm("""
             (module
@@ -36,6 +38,7 @@ struct ContentKindTests {
               (data (i32.const 1024) "\\00")
               (data (i32.const 1032) "\\00\\00")
               (data (i32.const 2048) "\(Self.escaped(update))")
+              \(buffers.map { "(data (i32.const \($0.0)) \"\(Self.escaped($0.1))\")" }.joined(separator: "\n"))
               (func $capture (param $pointer i32) (param $length i32)
                 i32.const \(Self.capture) local.get $length i32.store
                 i32.const \(Self.capture + 4) local.get $pointer local.get $length memory.copy)
@@ -215,5 +218,73 @@ struct ContentKindTests {
         #expect(scroller.first == 14)
         let bigScroller = try ItoPostcardEncoder().encode(HomeComponentValue.mediaBigScroller([], nil))
         #expect(bigScroller.first == 16)
+    }
+
+    @Test func chapterKindsAreStoredByName() throws {
+        let stored = String(decoding: try JSONEncoder().encode(Chapter(key: "c", kind: .text)), as: UTF8.self)
+        #expect(stored.contains(#""kind":"text""#))
+        let decoded = try JSONDecoder().decode(Chapter.self, from: Data(#"{"key":"c","kind":"images"}"#.utf8))
+        #expect(decoded.kind == .images)
+    }
+
+    @Test func anABI2PluginCannotAnswerWithAKindItDoesNotServe() async throws {
+        let novel = Novel(key: "n", title: "N")
+        let novels = try ItoPostcardEncoder().encode(MediaPageResult(entries: [.novel(novel)], hasNextPage: false))
+        let home = try ItoPostcardEncoder().encode(
+            HomeLayout(components: [HomeComponent(value: .novelScroller([novel], nil))]))
+        let runner = try await plugin("""
+            (func (export "ito_abi_version") (result i32) i32.const 2)
+            (func (export "ito_supported_kinds") (result i32) i32.const 1)
+            (func (export "get_listing") (param i32 i32 i32) (result i64) i64.const \(Self.packed(3072, novels.count)))
+            (func (export "search") (param i32 i32 i32 i32 i32 i32) (result i64)
+              i64.const \(Self.packed(3072, novels.count)))
+            (func (export "get_home") (result i64) i64.const \(Self.packed(3584, home.count)))
+            """, buffers: [(3072, novels), (3584, home)])
+        let reason = "The plugin returned a kind it doesn't serve (novel)."
+
+        await #expect(throws: ItoError.pluginFailed(function: "get_listing", reason: reason)) {
+            try await runner.getListing(Listing(id: "l", name: "L", kind: 0), page: 1)
+        }
+        await #expect(throws: ItoError.pluginFailed(function: "search", reason: reason)) {
+            try await runner.search(query: "q", page: 1)
+        }
+        await #expect(throws: ItoError.pluginFailed(function: "get_home", reason: reason)) {
+            try await runner.getHome()
+        }
+    }
+
+    @Test func anABI2CompletionRefusalArrivesTyped() async throws {
+        // {category: unauthorized (zigzag 2), message: "No"}
+        let report: [UInt8] = [2, 2, UInt8(ascii: "N"), UInt8(ascii: "o")]
+        let runner = try await plugin("""
+            (func (export "ito_abi_version") (result i32) i32.const 2)
+            (func (export "ito_supported_kinds") (result i32) i32.const 1)
+            (func (export "ito_error_version") (result i32) i32.const 2)
+            (func (export "ito_last_error") (result i64) i64.const \(Self.packed(3072, report.count)))
+            (func (export "mark_completed") (param i32 i32 i32 i32 i32) (result i32) i32.const 0)
+            """, buffers: [(3072, report)])
+
+        await #expect(throws: ItoError.pluginFailed(function: "mark_completed", reason: "No", category: .unauthorized)) {
+            try await runner.markCompleted(kind: .manga, mediaKey: "m", unitKey: "c")
+        }
+    }
+
+    @Test func anABI1NovelPluginListsAndReadsItsNovels() async throws {
+        let novels = try ItoPostcardEncoder(abiVersion: 1).encode(
+            Novel.PageResult(entries: [Novel(key: "n", title: "N", chapters: [Chapter(key: "c")])], hasNextPage: true))
+        let runner = try await plugin("""
+            (func (export "get_novel_list") (param i32 i32 i32) (result i64) i64.const \(Self.packed(3072, novels.count)))
+            (func (export "get_chapter_content") (param i32 i32 i32 i32) (result i64)
+              local.get 2 local.get 3 call $capture
+              i64.const \(Self.packed(1024, 1)))
+            """, buffers: [(3072, novels)])
+
+        let listed = try await runner.getListing(Listing(id: "l", name: "L", kind: 0), page: 1)
+        #expect(listed.entries.map(\.kind) == [.novel] && listed.hasNextPage)
+        guard case .novel(let novel)? = listed.entries.first else { return }
+        #expect(novel.chapters?.first?.kind == nil, "an ABI 1 chapter has no kind")
+        #expect(listed.entries[0].contentKind(of: Chapter(key: "c")) == .text)
+        _ = try await runner.getChapterPages(entry: listed.entries[0], chapter: Chapter(key: "c"))
+        #expect(try await captured(runner) == [1, UInt8(ascii: "c"), 0, 0, 0, 0, 0, 0, 0, 0])
     }
 }
