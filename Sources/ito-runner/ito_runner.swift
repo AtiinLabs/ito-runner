@@ -22,6 +22,11 @@ public actor ItoRunner {
     /// Decodes payloads laid out the same in every ABI (settings, errors, image requests).
     private let postcardDecoder = ItoPostcardDecoder()
 
+    private enum CapabilitiesEntry {
+        case available(SearchCapabilities), absent, failed(ItoError)
+    }
+    private var capabilitiesByKind: [Int32: CapabilitiesEntry] = [:]
+
     /// The FFI Bridge that connects Host Modules to Wasm. Created upon plugin load.
     public var bridge: WasmBridge?
 
@@ -173,6 +178,7 @@ public actor ItoRunner {
             self.errorProtocolVersion = errorProtocolVersion
             self.abiVersion = abi
             self.supportedKinds = kinds
+            self.capabilitiesByKind.removeAll()
 
         } catch let error as ItoError {
             throw error
@@ -394,7 +400,7 @@ public actor ItoRunner {
     /// bytes, or nil when the export returned 0. The SDK returns 0 both for "nothing" (no settings,
     /// an unsupported image) and for failures; a failure is told apart by the reason the plugin
     /// printed, see `failure(of:)`.
-    private func callPacked(_ name: String, _ arguments: [ExportArgument] = []) throws -> [UInt8]? {
+    private func callPacked(_ name: String, _ arguments: [ExportArgument] = [], maxBytes: Int? = nil) throws -> [UInt8]? {
         var allocations: [(ptr: Int32, len: Int32)] = []
         defer {
             for allocation in allocations {
@@ -429,6 +435,9 @@ public actor ItoRunner {
             deallocBytes(
                 ptr: Int32(bitPattern: UInt32(responsePointer)),
                 len: Int32(bitPattern: UInt32(responseLength)))
+        }
+        if let maxBytes, responseLength > maxBytes {
+            throw ItoError.controlContractViolation(function: name, violation: .init(.responseTooLarge))
         }
         return try readMemory(offset: responsePointer, length: responseLength)
     }
@@ -480,6 +489,92 @@ public actor ItoRunner {
         guard let reported = try reportedFailure() else { return nil }
         if isUnsupported(reported) { return nil }
         throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
+    }
+
+    private func callBounded(_ name: String, _ args: [ExportArgument], parameters: [ValueType], maxBytes: Int) throws -> [UInt8]? {
+        guard abiVersion >= 2, let export = instance?.exports[name] else { return nil }
+        guard case .function(let function) = export,
+              function.type.parameters == parameters, function.type.results == [.i64] else {
+            throw ItoError.controlContractViolation(function: name, violation: .init(.signature))
+        }
+        if let bytes = try callPacked(name, args, maxBytes: maxBytes) { return bytes }
+        guard let reported = try reportedFailure() else { return nil }
+        if isUnsupported(reported) { return nil }
+        throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
+    }
+
+    private func decodeControls<T>(_ name: String, _ decode: () throws -> T) throws -> T {
+        do { return try decode() }
+        catch let violation as ControlContractViolation {
+            throw ItoError.controlContractViolation(function: name, violation: violation)
+        }
+        catch let error as ItoError { throw error }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw ItoError.postcardDecodingError("Malformed rich controls payload.") }
+    }
+
+    private func capabilities(_ kind: Int32) throws -> CapabilitiesEntry {
+        if let entry = capabilitiesByKind[kind] { return entry }
+        let entry: CapabilitiesEntry
+        do {
+            if let bytes = try callBounded("get_search_capabilities", [.int(kind)], parameters: [.i32], maxBytes: ControlLimits.capabilitiesBytes) {
+                entry = .available(try decodeControls("get_search_capabilities") { try ControlsDecoder.searchCapabilities(bytes) })
+            } else { entry = .absent }
+        } catch let error as ItoError where !error.isCrash {
+            if bridge?.activeCallToken?.isCancelled == true { throw CancellationError() }
+            entry = .failed(error)
+        }
+        if bridge?.activeCallToken?.isCancelled == true { throw CancellationError() }
+        capabilitiesByKind[kind] = entry
+        return entry
+    }
+
+    public func getSettingsSurface() async throws -> SettingsSurface? {
+        try await performSerialized {
+            var formFailure: ItoError?
+            do {
+                if let bytes = try self.callBounded("get_settings_form", [], parameters: [], maxBytes: ControlLimits.formBytes) {
+                    return .form(try self.decodeControls("get_settings_form") { try ControlsDecoder.settingsForm(bytes) })
+                }
+            } catch let error as ItoError where !error.isCrash { formFailure = error }
+            if self.isExported("get_settings"), let bytes = try self.callOptional("get_settings") {
+                return .legacy(try self.postcardDecoder.decode(SettingsSchema.self, from: bytes), formFailure: formFailure)
+            }
+            if let formFailure { throw formFailure }
+            return nil
+        }
+    }
+
+    public func getSearchCapabilities(kind: MediaKind?) async throws -> SearchCapabilities? {
+        guard abiVersion >= 2, kind.map({ supportedKinds.contains($0) }) ?? true else { return nil }
+        return try await performSerialized {
+            switch try self.capabilities(kind?.wireValue ?? -1) {
+            case .available(let capabilities): return capabilities
+            case .absent: return nil
+            case .failed(let error): throw error
+            }
+        }
+    }
+
+    public func getOptionPage(_ request: OptionRequest) async throws -> OptionPage? {
+        try decodeControls("get_option_page") { try ControlValidation.request(request) }
+        return try await performSerialized {
+            guard let bytes = try self.callBounded("get_option_page", [.bytes(try ItoPostcardEncoder().encode(request))],
+                parameters: [.i32, .i32], maxBytes: ControlLimits.optionPageBytes) else { return nil }
+            return try self.decodeControls("get_option_page") { try ControlsDecoder.optionPage(bytes, request: request) }
+        }
+    }
+
+    public func getSearchSuggestions(query: String, kind: MediaKind?) async throws -> [SearchSuggestion]? {
+        guard (1...256).contains(query.utf8.count), abiVersion >= 2,
+              kind.map({ supportedKinds.contains($0) }) ?? true else { return nil }
+        return try await performSerialized {
+            guard case .available(let capabilities) = try self.capabilities(kind?.wireValue ?? -1),
+                  capabilities.flags.contains(.suggestions) else { return nil }
+            guard let bytes = try self.callBounded("get_search_suggestions", [.bytes(Array(query.utf8)), .int(kind?.wireValue ?? -1)],
+                parameters: [.i32, .i32, .i32], maxBytes: ControlLimits.suggestionsBytes) else { return nil }
+            return try self.decodeControls("get_search_suggestions") { try ControlsDecoder.suggestions(bytes) }
+        }
     }
 
     /// Runs a completion export: ABI 1's `mark_chapter_read`/`mark_episode_watched(media, unit)`, or
@@ -704,16 +799,20 @@ public actor ItoRunner {
 
     /// Searches for `query`, among entries of `kind`, or of every kind the plugin serves when nil.
     /// A kind the plugin doesn't serve finds nothing without calling it.
-    public func search(query: String, page: Int32, kind: MediaKind? = nil, filters: [FilterItem]? = nil)
+    public func search(query: String, page: Int32, kind: MediaKind? = nil, filterValues: [String: ControlValue] = [:])
         async throws -> MediaPageResult {
         let contract = self.contract
         if let kind, !contract.kinds.contains(kind) {
             return MediaPageResult(entries: [], hasNextPage: false)
         }
         return try await performSerialized {
+            let filters: [FilterItem]
+            if contract.abi >= 2, case .available(let capabilities) = try self.capabilities(kind?.wireValue ?? -1) {
+                filters = capabilities.filterItems(values: filterValues)
+            } else { filters = [] }
             let arguments: (Int32?) throws -> [ExportArgument] = { kind in
                 [.bytes(Array(query.utf8)), .int(page)] + (kind.map { [.int($0)] } ?? [])
-                    + [.bytes(try contract.encoder.encode(filters ?? []))]
+                    + [.bytes(try contract.encoder.encode(filters))]
             }
             let result: MediaPageResult
             if contract.abi >= 2 {

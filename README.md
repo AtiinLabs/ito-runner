@@ -85,6 +85,48 @@ when appropriate. Never persist action writes or log setting values. Actions mus
 non-destructive and must not require interactive login. Validation is local-only, without
 network access or writes, and must not block saving incomplete settings.
 
+### Rich settings and search controls
+
+`getSettingsSurface()` prefers a validated `SettingsForm` without calling the legacy
+`get_settings` export. Missing or Unsupported forms fall back to `.legacy`; a failed
+form carries `formFailure` alongside the legacy schema. Traps and memory failures
+propagate. For `.form`, do not inject declared defaults into the host settings store:
+unset keys must remain unset. Keep legacy default injection for `.legacy`.
+
+Controls share `ControlKind`, `OptionSource`, `ControlValue`, and
+`ControlValueCodec`. Store canonical strings for plain controls, retain invalid stored
+values until a user edits or resets them, and keep secrets exclusively in credential
+storage. `effectiveValue(stored:)` and visibility helpers apply defaults without
+rewriting storage. Render unknown kinds as unavailable; never write values for them.
+
+```swift
+let capabilities = try await runner.getSearchCapabilities(kind: .manga)
+let results = try await runner.search(
+    query: "", page: 1, kind: .manga,
+    filterValues: ["adult": .toggle(false), "genres": .multiSelect(["fantasy"])])
+let options = try await runner.getOptionPage(
+    OptionRequest(catalog: "genres", query: .search(text: "", offset: 0), limit: 50))
+let suggestions = try await runner.getSearchSuggestions(query: "fri", kind: .manga)
+```
+
+Capabilities are cached per kind (including absence and non-crash failures) until a
+plugin is loaded again. Every search sends one canonical string item per known control,
+in declaration order, applying defaults to invalid or hidden values. Searches without
+capabilities send the unchanged empty filter list. The `filterValues` parameter replaces
+the old low-level `filters` parameter; callers omitting filters remain source-compatible.
+Keep search choices in memory, never in the settings store.
+
+Catalog requests support offset paging and batches of up to 100 selected values for label
+resolution. On revision changes restart paging; failed label resolution must not remove
+selections. Suggestions are called only when the capability flag is set. All new calls
+use the serialized execution lane and preserve cancellation.
+
+New optional exports require ABI 2 and exact signatures. Response byte budgets are checked
+before copying WASM memory; payloads and requests are validated against the rich-controls
+v1 contract. `ItoError.controlContractViolation` exposes only a rule code and, optionally,
+a validated identifier. Do not log values, queries, labels, catalog contents, or secrets.
+The legacy wire layouts, ABI version, and `FilterValue` variants are unchanged.
+
 ### Runner lifetime
 
 The bridge keeps a weak runner reference, breaking the loaded-runner retain cycle. Dropping

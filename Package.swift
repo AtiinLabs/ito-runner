@@ -41,7 +41,8 @@ let package = Package(
             dependencies: [
                 "ito-runner",
                 .product(name: "WAT", package: "WasmKit")
-            ]
+            ],
+            resources: [.copy("Fixtures")]
         )
     ]
 )
