@@ -225,6 +225,36 @@
       "direction": "host_to_plugin",
       "hex": "00",
       "expect": "ok"
+    },
+    {
+      "name": "option_request.utf8_distinct",
+      "type": "OptionRequest",
+      "direction": "host_to_plugin",
+      "hex": "0474616773010202c3a90365cc8102",
+      "expect": "ok"
+    },
+    {
+      "name": "option_request.utf8_composed",
+      "type": "OptionRequest",
+      "direction": "host_to_plugin",
+      "hex": "0474616773010102c3a901",
+      "expect": "ok"
+    },
+    {
+      "name": "option_page.utf8_distinct",
+      "type": "OptionPage",
+      "direction": "plugin_to_host",
+      "hex": "0202c3a9054c6162656c000365cc81054c6162656c00000000",
+      "expect": "ok",
+      "request": "option_request.utf8_distinct"
+    },
+    {
+      "name": "option_page.utf8_wrong_normalization",
+      "type": "OptionPage",
+      "direction": "plugin_to_host",
+      "hex": "010365cc81054c6162656c00000000",
+      "expect": "violation:page.values",
+      "request": "option_request.utf8_composed"
     }
   ],
   "values": [
@@ -342,7 +372,31 @@
       "canonical": "[\"\\u001f\"]",
       "items": [
         "\u001f"
-      ]
+      ],
+      "runtime_invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"é\",\"é\"]",
+      "items": ["é", "é"]
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\\u0000\"]",
+      "items": ["\u0000"],
+      "runtime_invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\u007f\"]",
+      "items": ["\u007f"],
+      "runtime_invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\u0085\"]",
+      "items": ["\u0085"],
+      "runtime_invalid": true
     },
     {
       "kind": "multi_select",

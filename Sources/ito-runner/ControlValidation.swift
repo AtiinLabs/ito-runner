@@ -98,7 +98,7 @@ enum ControlValidation {
         s.unicodeScalars.allSatisfy { (newline && $0.value == 10) || ($0.value >= 32 && !(127...159).contains($0.value)) }
     }
     static func validValue(_ s: String) -> Bool {
-        (1...ControlLimits.valueBytes).contains(s.utf8.count) && s.unicodeScalars.allSatisfy { $0.value >= 32 && $0.value != 127 }
+        (1...ControlLimits.valueBytes).contains(s.utf8.count) && humanCharacters(s)
     }
     static func require(_ condition: Bool, _ rule: ControlContractViolation.Rule, _ id: String? = nil) throws {
         if !condition { throw ControlContractViolation(rule, id: id) }
@@ -116,17 +116,17 @@ enum ControlValidation {
         try require(validValue(s), .charsValue, id)
     }
     static func values(_ values: [String], id: String? = nil, rule: ControlContractViolation.Rule = .lengthValue) throws {
-        var seen = Set<String>()
+        var seen = Set<Data>()
         for v in values {
             try value(v, id: id, rule: rule)
-            try require(seen.insert(v).inserted, .duplicateValue, id)
+            try require(seen.insert(Data(v.utf8)).inserted, .duplicateValue, id)
         }
     }
     static func options(_ options: [ChoiceOption], id: String? = nil) throws {
-        var seen = Set<String>()
+        var seen = Set<Data>()
         for option in options {
             try value(option.value, id: id)
-            try require(seen.insert(option.value).inserted, .duplicateOption, id)
+            try require(seen.insert(option.identity).inserted, .duplicateOption, id)
             try human(option.label, max: ControlLimits.labelBytes, rule: .lengthLabel, id: id)
             if let group = option.group { try human(group, max: ControlLimits.groupBytes, rule: .lengthGroup, id: id) }
         }
@@ -164,7 +164,7 @@ enum ControlValidation {
             try source(body.options, id: c.id, total: &optionsTotal)
             if let v = body.defaultValue {
                 try value(v, id: c.id, rule: .lengthDefault)
-                if case .inline(let choices) = body.options { try require(choices.contains { $0.value == v }, .controlDefault, c.id) }
+                if case .inline(let choices) = body.options { try require(choices.contains { $0.value.utf8.elementsEqual(v.utf8) }, .controlDefault, c.id) }
             }
         case .multiSelect(let body):
             try source(body.options, id: c.id, total: &optionsTotal)
@@ -172,8 +172,8 @@ enum ControlValidation {
             try values(body.defaultValue, id: c.id, rule: .lengthDefault)
             if let cap = body.maxSelected { try require(cap >= 1 && cap <= UInt32(ControlLimits.maxSelected) && Int(cap) >= body.defaultValue.count, .controlMaxSelected, c.id) }
             if case .inline(let choices) = body.options {
-                let known = Set(choices.map(\.value))
-                try require(body.defaultValue.allSatisfy(known.contains), .controlDefault, c.id)
+                let known = Set(choices.map(\.identity))
+                try require(body.defaultValue.allSatisfy { known.contains(Data($0.utf8)) }, .controlDefault, c.id)
             }
         case .integer(let body):
             try require(body.min <= body.max, .controlBounds, c.id)
@@ -242,7 +242,8 @@ enum ControlValidation {
         switch request.query {
         case .search(_, let offset): try require(page.nextOffset.map { $0 > offset } ?? true, .pageProgress, request.catalog)
         case .values(let values):
-            try require(page.nextOffset == nil && page.options.allSatisfy { values.contains($0.value) }, .pageValues, request.catalog)
+            let requested = Set(values.map { Data($0.utf8) })
+            try require(page.nextOffset == nil && page.options.allSatisfy { requested.contains($0.identity) }, .pageValues, request.catalog)
         }
         if let revision = page.revision {
             try require((1...ControlLimits.revisionBytes).contains(revision.utf8.count), .lengthRevision, request.catalog)

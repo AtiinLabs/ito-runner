@@ -35,7 +35,9 @@ struct ControlsValidationTests {
     }
     @Test func valueBoundaries() throws {
         try ControlValidation.value(String(repeating: "a", count: 256))
-        try ControlValidation.value("\u{80}")
+        for scalar in ["\u{00}", "\u{1f}", "\u{7f}", "\u{80}", "\u{9f}"] {
+            rejects(.charsValue) { try ControlValidation.value(scalar) }
+        }
         rejects(.lengthValue) { try ControlValidation.value("") }
         rejects(.lengthValue) { try ControlValidation.value(String(repeating: "a", count: 257)) }
         rejects(.charsValue) { try ControlValidation.value("\u{7f}") }
@@ -123,6 +125,40 @@ struct ControlsValidationTests {
         rejects(.lengthRevision) { try ControlValidation.page(OptionPage(options: [], revision: ""), request: request) }
         rejects(.charsText) { try ControlValidation.page(OptionPage(options: [], revision: "bad revision"), request: request) }
         try ControlValidation.page(OptionPage(options: [], revision: String(repeating: "x", count: 64)), request: request)
+    }
+    @Test func opaqueValuesUseExactUTF8Identity() throws {
+        let composed = "\u{e9}", decomposed = "e\u{301}"
+        let options = [composed, decomposed].map { ChoiceOption(value: $0, label: "Same label") }
+        #expect(options[0].identity != options[1].identity)
+        #expect(Set(options).count == 2)
+        try ControlValidation.options(options)
+        try ControlValidation.values([composed, decomposed])
+        try validate([control(kind: .multiSelect(MultiSelectControl(options: .inline(options), defaultValue: [composed, decomposed])))])
+        try validate([control(kind: .select(SelectControl(options: .inline(options), defaultValue: decomposed)))])
+        let composedOnly = OptionSource.inline([options[0]])
+        rejects(.controlDefault) {
+            try validate([control(kind: .select(SelectControl(options: composedOnly, defaultValue: decomposed)))])
+        }
+        rejects(.controlDefault) {
+            try validate([control(kind: .multiSelect(MultiSelectControl(options: composedOnly, defaultValue: [decomposed])))])
+        }
+        let request = OptionRequest(catalog: "tags", query: .values([composed, decomposed]), limit: 2)
+        try ControlValidation.request(request)
+        try ControlValidation.page(OptionPage(options: options), request: request)
+        let composedRequest = OptionRequest(catalog: "tags", query: .values([composed]), limit: 1)
+        rejects(.pageValues) {
+            try ControlValidation.page(OptionPage(options: [options[1]]), request: composedRequest)
+        }
+        rejects(.duplicateOption) { try ControlValidation.options([options[0], options[0]]) }
+        rejects(.duplicateValue) { try ControlValidation.values([decomposed, decomposed]) }
+        #expect(OptionQuery.values([composed]) != .values([decomposed]))
+        #expect(ControlCondition(control: "x", anyOf: [composed]) != ControlCondition(control: "x", anyOf: [decomposed]))
+        #expect(SelectControl(options: composedOnly, defaultValue: composed) != SelectControl(options: composedOnly, defaultValue: decomposed))
+        #expect(MultiSelectControl(options: composedOnly, defaultValue: [composed]) != MultiSelectControl(options: composedOnly, defaultValue: [decomposed]))
+        let target = control("target", kind: .select(SelectControl(options: .inline(options))))
+        var dependent = control("dependent")
+        dependent.visibleWhen = [ControlCondition(control: "target", anyOf: [composed, decomposed])]
+        try validate([target, dependent])
     }
     @Test func prefixLimitsPrecedeElementDecoding() {
         rejects(.countSections) { _ = try ControlsDecoder.settingsForm([33]) }

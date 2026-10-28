@@ -37,6 +37,9 @@ public struct ControlCondition: Codable, Equatable, Sendable {
         self.control = control
         self.anyOf = anyOf
     }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.control == rhs.control && lhs.anyOf.elementsEqual(rhs.anyOf) { $0.utf8.elementsEqual($1.utf8) }
+    }
 }
 
 public struct ToggleControl: Codable, Equatable, Sendable {
@@ -79,6 +82,9 @@ public struct SelectControl: Codable, Equatable, Sendable {
         self.options = options
         self.defaultValue = defaultValue
     }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.options == rhs.options && lhs.defaultValue.map { Data($0.utf8) } == rhs.defaultValue.map { Data($0.utf8) }
+    }
 }
 
 public struct MultiSelectControl: Codable, Equatable, Sendable {
@@ -89,6 +95,10 @@ public struct MultiSelectControl: Codable, Equatable, Sendable {
         self.options = options
         self.defaultValue = defaultValue
         self.maxSelected = maxSelected
+    }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.options == rhs.options && lhs.maxSelected == rhs.maxSelected
+            && lhs.defaultValue.elementsEqual(rhs.defaultValue) { $0.utf8.elementsEqual($1.utf8) }
     }
 }
 
@@ -140,10 +150,20 @@ public struct ChoiceOption: Codable, Hashable, Sendable {
     public var value: String
     public var label: String
     public var group: String?
+    /// Opaque option identity uses exact UTF-8 bytes, without Unicode normalization.
+    public var identity: Data { Data(value.utf8) }
     public init(value: String, label: String, group: String? = nil) {
         self.value = value
         self.label = label
         self.group = group
+    }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.value.utf8.elementsEqual(rhs.value.utf8) && lhs.label == rhs.label && lhs.group == rhs.group
+    }
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(identity)
+        hasher.combine(label)
+        hasher.combine(group)
     }
 }
 
@@ -210,6 +230,13 @@ public enum OptionQuery: Codable, Equatable, Sendable, PostcardEnumMarker {
     case search(text: String, offset: UInt32)
     case values([String])
     enum CodingKeys: Int, CodingKey, PostcardEnumKeys { case search = 0, values = 1 }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        switch (lhs, rhs) {
+        case let (.search(a, x), .search(b, y)): return a == b && x == y
+        case let (.values(a), .values(b)): return a.elementsEqual(b) { $0.utf8.elementsEqual($1.utf8) }
+        default: return false
+        }
+    }
 }
 public enum SettingsSurface: Sendable {
     case form(SettingsForm)

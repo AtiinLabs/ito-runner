@@ -30,6 +30,7 @@ private struct ControlsFixtures: Decodable {
         let kind: String
         let canonical: String
         let invalid: Bool?
+        let runtime_invalid: Bool?
         let items: [String]?
         let value: Scalar?
         let lower: Int64?
@@ -57,7 +58,9 @@ struct ControlsWireTests {
             "control.condition_on_conditional", "control.condition_toggle_value", "control.body_trailing_byte",
             "search_capabilities.secret_filter", "search_capabilities.sort_catalog", "option_page.no_progress",
             "option_page.unrequested_value", "option_page.too_many_options", "option_request.search",
-            "option_request.values", "filters.dense", "filters.empty"
+            "option_request.values", "filters.dense", "filters.empty",
+            "option_request.utf8_distinct", "option_request.utf8_composed",
+            "option_page.utf8_distinct", "option_page.utf8_wrong_normalization"
         ]
         let names = try ControlsFixtures.load().wire.map(\.name)
         #expect(Set(names).count == names.count)
@@ -194,7 +197,8 @@ struct ControlsWireTests {
             if fixture.invalid == true { #expect(decoded == nil) }
             else {
                 #expect(decoded != nil)
-                #expect(decoded.map(ControlValueCodec.canonical) == fixture.canonical)
+                #expect(decoded.map(ControlValueCodec.canonical).map { $0.utf8.elementsEqual(fixture.canonical.utf8) } == true)
+                if let decoded { #expect(kind.accepts(decoded) == (fixture.runtime_invalid != true)) }
                 if let items = fixture.items { #expect(decoded == .multiSelect(items)) }
                 if case .integer(let value)? = fixture.value { #expect(decoded == .integer(value)) }
                 if case .boolean(let value)? = fixture.value { #expect(decoded == .toggle(value)) }

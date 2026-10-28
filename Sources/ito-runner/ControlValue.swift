@@ -3,6 +3,31 @@ import Foundation
 public enum ControlValue: Hashable, Sendable {
     case toggle(Bool), text(String), select(String?), multiSelect([String]), integer(Int64?)
     case integerRange(lower: Int64?, upper: Int64?)
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        switch (lhs, rhs) {
+        case let (.toggle(a), .toggle(b)): return a == b
+        case let (.text(a), .text(b)): return a.utf8.elementsEqual(b.utf8)
+        case let (.select(a), .select(b)): return a.map { Data($0.utf8) } == b.map { Data($0.utf8) }
+        case let (.multiSelect(a), .multiSelect(b)): return a.elementsEqual(b) { $0.utf8.elementsEqual($1.utf8) }
+        case let (.integer(a), .integer(b)): return a == b
+        case let (.integerRange(a, b), .integerRange(c, d)): return a == c && b == d
+        default: return false
+        }
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        switch self {
+        case .toggle(let value): hasher.combine(0); hasher.combine(value)
+        case .text(let value): hasher.combine(1); hasher.combine(Data(value.utf8))
+        case .select(let value): hasher.combine(2); hasher.combine(value.map { Data($0.utf8) })
+        case .multiSelect(let values):
+            hasher.combine(3); hasher.combine(values.count)
+            for value in values { hasher.combine(Data(value.utf8)) }
+        case .integer(let value): hasher.combine(4); hasher.combine(value)
+        case .integerRange(let lower, let upper): hasher.combine(5); hasher.combine(lower); hasher.combine(upper)
+        }
+    }
 }
 
 public enum ControlValueCodec {
@@ -51,8 +76,8 @@ public enum ControlValueCodec {
             // noncanonical escape, whitespace, duplicate, empty item and alternate spelling.
             guard let data = canonical.data(using: .utf8),
                   let values = try? JSONSerialization.jsonObject(with: data) as? [String],
-                  values.allSatisfy({ !$0.isEmpty }), Set(values).count == values.count,
-                  self.canonical(.multiSelect(values)) == canonical else { return nil }
+                  values.allSatisfy({ !$0.isEmpty }), Set(values.map { Data($0.utf8) }).count == values.count,
+                  self.canonical(.multiSelect(values)).utf8.elementsEqual(canonical.utf8) else { return nil }
             return .multiSelect(values)
         case .integerRange:
             guard canonical.first == "[", canonical.last == "]" else { return nil }
@@ -89,7 +114,7 @@ extension ControlKind {
         case (.select, .select(let value)): return value.map(ControlValidation.validValue) ?? true
         case (.multiSelect(let c), .multiSelect(let values)):
             return values.count <= Int(c.maxSelected ?? UInt32(ControlLimits.maxSelected)) && values.count <= ControlLimits.maxSelected
-                && Set(values).count == values.count && values.allSatisfy(ControlValidation.validValue)
+                && Set(values.map { Data($0.utf8) }).count == values.count && values.allSatisfy(ControlValidation.validValue)
         case (.integer(let c), .integer(let value)): return value.map { $0 >= c.min && $0 <= c.max } ?? true
         case (.integerRange(let c), .integerRange(let lower, let upper)):
             return (lower.map { $0 >= c.min && $0 <= c.max } ?? true)
@@ -118,8 +143,8 @@ private func visibleIDs(_ controls: [Control], value: (Control) -> ControlValue?
             if case .unsupported = target.kind { return true }
             switch value(target) {
             case .toggle(let v): return condition.anyOf.contains(v ? "true" : "false")
-            case .select(let v): return v.map(condition.anyOf.contains) ?? false
-            case .multiSelect(let v): return v.contains(where: condition.anyOf.contains)
+            case .select(let v): return v.map { selected in condition.anyOf.contains { $0.utf8.elementsEqual(selected.utf8) } } ?? false
+            case .multiSelect(let v): return v.contains { selected in condition.anyOf.contains { $0.utf8.elementsEqual(selected.utf8) } }
             default: return false
             }
         }

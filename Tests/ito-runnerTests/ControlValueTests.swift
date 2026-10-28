@@ -70,4 +70,78 @@ struct ControlValueTests {
         let form = SettingsForm(sections: [ControlSection(id: "s", title: "S", controls: [future, dependent])])
         #expect(form.visibleControlIDs { $0.kind.defaultValue } == ["future", "x"])
     }
+    @Test func opaqueRuntimeIdentityAndCanonicalBytes() throws {
+        let composed = "\u{e9}", decomposed = "e\u{301}"
+        let pairs: [(ControlValue, ControlValue)] = [
+            (.text(composed), .text(decomposed)),
+            (.select(composed), .select(decomposed)),
+            (.multiSelect([composed]), .multiSelect([decomposed]))
+        ]
+        for pair in pairs {
+            #expect(pair.0 != pair.1)
+            #expect(Set([pair.0, pair.1]).count == 2)
+        }
+        #expect(ControlValue.select(nil) != .select(""))
+        #expect(ControlValue.text(composed) != .select(composed))
+        let values = [composed, decomposed]
+        let canonical = ControlValueCodec.canonical(.multiSelect(values))
+        let decoded = try #require(ControlValueCodec.decode(canonical, for: multi))
+        #expect(decoded == .multiSelect(values))
+        #expect(ControlValueCodec.canonical(decoded).utf8.elementsEqual(canonical.utf8))
+        #expect(multi.accepts(decoded))
+        #expect(!multi.accepts(.multiSelect([composed, composed])))
+        let control = Control(id: "tags", title: "Tags", kind: multi)
+        #expect(control.effectiveValue(stored: canonical).state == .valid)
+        #expect(control.effectiveValue(stored: canonical).value == .multiSelect(values))
+        let capped = ControlKind.multiSelect(MultiSelectControl(options: .catalog(OptionCatalog(id: "tags")), defaultValue: [], maxSelected: 1))
+        #expect(!capped.accepts(decoded))
+        #expect(Control(id: "tags", title: "Tags", kind: capped).effectiveValue(stored: canonical).state == .invalid)
+        for invalidValues in [
+            [String(repeating: "a", count: ControlLimits.valueBytes + 1)],
+            (0...ControlLimits.maxSelected).map { "v\($0)" }
+        ] {
+            let stored = ControlValueCodec.canonical(.multiSelect(invalidValues))
+            #expect(ControlValueCodec.decode(stored, for: multi) != nil)
+            #expect(control.effectiveValue(stored: stored).state == .invalid)
+            #expect(control.effectiveValue(stored: stored).value == .multiSelect([]))
+        }
+    }
+
+    @Test(arguments: ["\u{00}", "\u{1f}", "\u{7f}", "\u{80}", "\u{9f}"])
+    func syntaxRecognizesButRuntimeRejectsControlCharacters(_ value: String) throws {
+        let canonical = ControlValueCodec.canonical(.multiSelect([value]))
+        let decoded = try #require(ControlValueCodec.decode(canonical, for: multi))
+        #expect(!multi.accepts(decoded))
+        let control = Control(id: "tags", title: "Tags", kind: multi)
+        #expect(control.effectiveValue(stored: canonical).state == .invalid)
+        #expect(control.effectiveValue(stored: canonical).value == .multiSelect([]))
+        let caps = SearchCapabilities(sections: [ControlSection(id: "s", title: "S", controls: [control])])
+        if case .string(let stored)? = caps.filterItems(values: ["tags": decoded]).first?.value {
+            #expect(stored == "[]")
+        } else { Issue.record("Expected canonical multi-select filter") }
+    }
+
+    @Test func conditionsMatchOnlyExactOpaqueValues() {
+        let composed = "\u{e9}", decomposed = "e\u{301}"
+        let source = OptionSource.catalog(OptionCatalog(id: "tags"))
+        for kind in [
+            ControlKind.select(SelectControl(options: source)),
+            .multiSelect(MultiSelectControl(options: source, defaultValue: []))
+        ] {
+            let target = Control(id: "target", title: "Target", kind: kind)
+            let dependent = Control(id: "dependent", title: "Dependent",
+                                    visibleWhen: [ControlCondition(control: "target", anyOf: [composed])], kind: toggle)
+            let caps = SearchCapabilities(sections: [ControlSection(id: "s", title: "S", controls: [target, dependent])])
+            let exact: ControlValue, wrongForm: ControlValue
+            if case .select = kind {
+                exact = .select(composed); wrongForm = .select(decomposed)
+            } else {
+                exact = .multiSelect([decomposed, composed]); wrongForm = .multiSelect([decomposed])
+            }
+            #expect(caps.visibleControlIDs(values: ["target": exact]).contains("dependent"))
+            #expect(!caps.visibleControlIDs(values: ["target": wrongForm]).contains("dependent"))
+            let form = SettingsForm(sections: caps.sections)
+            #expect(!form.visibleControlIDs { $0.id == "target" ? wrongForm : $0.kind.defaultValue }.contains("dependent"))
+        }
+    }
 }
