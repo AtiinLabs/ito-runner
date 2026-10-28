@@ -30,8 +30,19 @@ public enum ItoError: LocalizedError, Equatable {
     /// The plugin was built for an ABI version (`ito_abi_version`) this runner doesn't support.
     case unsupportedABI(version: Int, supported: ClosedRange<Int>)
 
+    case controlContractViolation(function: String, violation: ControlContractViolation)
+
+    public var isCrash: Bool {
+        switch self {
+        case .wasmTrap, .memoryOutOfBounds: return true
+        default: return false
+        }
+    }
+
     public var errorDescription: String? {
         switch self {
+        case .controlContractViolation(let function, let violation):
+            return "\(function): invalid controls contract: \(violation)"
         case .wasmTrap(let reason):
             return "Wasm execution trapped: \(reason)"
         case .memoryOutOfBounds(let offset, let length, let memorySize):
@@ -57,6 +68,8 @@ public enum ItoError: LocalizedError, Equatable {
 
     public static func == (lhs: ItoError, rhs: ItoError) -> Bool {
         switch (lhs, rhs) {
+        case (.controlContractViolation(let lf, let lv), .controlContractViolation(let rf, let rv)):
+            return lf == rf && lv == rv
         case (.wasmTrap(let l), .wasmTrap(let r)): return l == r
         case (
             .memoryOutOfBounds(let l1, let l2, let l3), .memoryOutOfBounds(let r1, let r2, let r3)

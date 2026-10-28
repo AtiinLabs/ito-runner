@@ -532,6 +532,12 @@ public struct FilterItem: Codable, Sendable {
     public var type: String
     public var name: String
     public var value: FilterValue
+
+    public init(type: String, name: String, value: FilterValue) {
+        self.type = type
+        self.name = name
+        self.value = value
+    }
 }
 
 public struct Link: Codable, Sendable {

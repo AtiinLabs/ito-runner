@@ -17,11 +17,21 @@ public struct ItoPostcardDecoder: Sendable {
     /// - Returns: An instance of the requested type.
     /// - Throws: `ItoError.postcardDecodingError` if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from data: [UInt8]) throws -> T {
+        try decode(type, from: data, controls: false, pageLimit: nil)
+    }
+
+    func decodeControls<T: Decodable>(_ type: T.Type, from data: [UInt8], pageLimit: Int? = nil) throws -> T {
+        try decode(type, from: data, controls: true, pageLimit: pageLimit)
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, from data: [UInt8], controls: Bool, pageLimit: Int?) throws -> T {
         let decoder = _PostcardDecoder(data: data)
 
         let isMap = (type is PostcardMapDecodable.Type)
         decoder.userInfo[mapFlagKey] = isMap
         decoder.userInfo[postcardABIVersionKey] = abiVersion
+        decoder.userInfo[controlsLimitsKey] = controls
+        decoder.userInfo[controlsPageLimitKey] = pageLimit
 
         if T.self is any PostcardEnum.Type {
             let singleDecoder = try decoder.singleValueContainer() as! _PostcardSingleValueDecoder
@@ -49,6 +59,8 @@ let mapFlagKey = CodingUserInfoKey(rawValue: "ito.postcard.isMap")!
 let enumDiscriminantKey = CodingUserInfoKey(rawValue: "ito.postcard.enumDiscriminant")!
 /// Set by the postcard coders to the plugin ABI they read or write; absent in other formats.
 let postcardABIVersionKey = CodingUserInfoKey(rawValue: "ito.postcard.abiVersion")!
+private let controlsLimitsKey = CodingUserInfoKey(rawValue: "ito.controls.limits")!
+private let controlsPageLimitKey = CodingUserInfoKey(rawValue: "ito.controls.pageLimit")!
 
 private class _PostcardDecoder: Decoder {
     var codingPath: [CodingKey] = []
@@ -157,6 +169,9 @@ private struct _PostcardKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCon
     func decode<T>(_ type: T.Type, forKey key: Key) throws -> T where T: Decodable {
         decoder.codingPath.append(key)
         defer { decoder.codingPath.removeLast() }
+        if type == [UInt8].self {
+            return try _PostcardSingleValueDecoder(decoder: decoder).decode(type)
+        }
 
         return try decoder.withMapFlag(type) {
             try T(from: decoder)
@@ -348,6 +363,23 @@ private struct _PostcardUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         // In Postcard, sequences always start with a varint length, read here so `isAtEnd` works.
         let singleDecoder = try decoder.singleValueContainer() as! _PostcardSingleValueDecoder
         let length = try narrow(singleDecoder.decodeVarint(), to: Int.self)
+        if decoder.userInfo[controlsLimitsKey] as? Bool == true {
+            let bound: (Int, ControlContractViolation.Rule)?
+            switch decoder.codingPath.last?.stringValue {
+            case "sections": bound = (ControlLimits.sections, .countSections)
+            case "controls": bound = (ControlLimits.sectionControls, .countSectionControls)
+            case "options" where decoder.userInfo[controlsPageLimitKey] != nil:
+                bound = (decoder.userInfo[controlsPageLimitKey] as! Int, .countPageOptions)
+            case nil: bound = (ControlLimits.suggestions, .countSuggestions)
+            default: bound = nil
+            }
+            if let (max, rule) = bound, length > max { throw ControlContractViolation(rule) }
+            // Every element in the closed controls vocabulary consumes at least one byte.
+            // Reject impossible prefixes before Array can reserve attacker-provided capacity.
+            guard length <= decoder.data.count - decoder.currentIndex else {
+                throw ItoError.postcardDecodingError("Controls sequence length exceeds remaining bytes.")
+            }
+        }
         if let isMap = decoder.userInfo[mapFlagKey] as? Bool, isMap {
             // For maps the length counts entries, but the container iterates keys and values.
             let (items, overflow) = length.multipliedReportingOverflow(by: 2)
@@ -608,6 +640,13 @@ private struct _PostcardSingleValueDecoder: SingleValueDecodingContainer {
     }
 
     func decode<T>(_ type: T.Type) throws -> T where T: Decodable {
+        if type == [UInt8].self {
+            let length = try narrow(decodeVarint(), to: Int.self)
+            if decoder.codingPath.last?.stringValue == "kindBody", length > ControlLimits.bodyBytes {
+                throw ControlContractViolation(.lengthBody)
+            }
+            return Array(try decoder.consume(length)) as! T
+        }
         return try decoder.withMapFlag(type) {
             try T(from: decoder)
         }

@@ -1,0 +1,516 @@
+{
+  "contract": "ito-controls",
+  "version": 1,
+  "wire": [
+    {
+      "name": "settings_form.empty",
+      "type": "SettingsForm",
+      "direction": "plugin_to_host",
+      "hex": "00",
+      "expect": "ok"
+    },
+    {
+      "name": "settings_form.one_toggle",
+      "type": "SettingsForm",
+      "direction": "plugin_to_host",
+      "hex": "0107636f6e74656e7407436f6e74656e74000001056164756c74054164756c74000000000100",
+      "expect": "ok"
+    },
+    {
+      "name": "settings_form.all_kinds",
+      "type": "SettingsForm",
+      "direction": "plugin_to_host",
+      "hex": "0107636f6e74656e7407436f6e74656e74010c416c6c20636f6e74726f6c730108056164756c74054164756c74010744657461696c7300000001000474657874045465787401114c696e65206f6e650a4c696e652074776f000001281968747470733a2f2f6578616d706c652e746573740a70617468010b456e74657220612055524c030673656372657406536563726574010744657461696c730000020c010a43726564656e7469616c0673656c6563740653656c656374010744657461696c73000003260002016105416c70686101074c6574746572730162044265746101074c657474657273010161056d756c7469054d756c7469010744657461696c73000004280002016105416c70686101074c6574746572730162044265746101074c657474657273010161010207696e746567657207496e7465676572010744657461696c730000050b1314010001056974656d730572616e67650552616e6765010744657461696c7300000610d81de82001be1f01d01f01047965617204746167730454616773010744657461696c730001056164756c74010474727565040a01047461677301000140",
+      "expect": "ok"
+    },
+    {
+      "name": "settings_form.flags",
+      "type": "SettingsForm",
+      "direction": "plugin_to_host",
+      "hex": "0107636f6e74656e7407436f6e74656e74008180808008010474657874045465787400000001201968747470733a2f2f6578616d706c652e746573740a70617468010355524c03",
+      "expect": "ok",
+      "sdk_expect": "violation:flags.undefined:content"
+    },
+    {
+      "name": "control.multi_select_catalog",
+      "type": "Control",
+      "direction": "plugin_to_host",
+      "hex": "04746167730454616773000001056164756c740104747275650409010474616773010000",
+      "expect": "ok"
+    },
+    {
+      "name": "control.integer",
+      "type": "Control",
+      "direction": "plugin_to_host",
+      "hex": "047965617204596561720000000506d81de8200000",
+      "expect": "ok"
+    },
+    {
+      "name": "control.unknown_kind_99",
+      "type": "Control",
+      "direction": "plugin_to_host",
+      "hex": "06667574757265064675747572650000006302aabb",
+      "expect": "unsupported:99"
+    },
+    {
+      "name": "control.unknown_kind_empty_body",
+      "type": "Control",
+      "direction": "plugin_to_host",
+      "hex": "06667574757265064675747572650000000700",
+      "expect": "unsupported:7"
+    },
+    {
+      "name": "search_capabilities.sort_only",
+      "type": "SearchCapabilities",
+      "direction": "plugin_to_host",
+      "hex": "050104736f727404536f7274000000032800020576696577730a506f70756c617269747900057469746c65055469746c65000105766965777300",
+      "expect": "ok"
+    },
+    {
+      "name": "search_capabilities.full",
+      "type": "SearchCapabilities",
+      "direction": "plugin_to_host",
+      "hex": "8f808080080104736f727404536f7274000000032800020576696577730a506f70756c617269747900057469746c65055469746c650001057669657773010766696c746572730746696c74657273000004056164756c74054164756c74000000000100047965617204596561720000000607d81de8200000000667656e7265730647656e72657300000004180002016105416c706861000162044265746100010161010204746167730454616773000001056164756c740104747275650409010474616773010000",
+      "expect": "ok",
+      "sdk_expect": "violation:flags.undefined"
+    },
+    {
+      "name": "option_page.first",
+      "type": "OptionPage",
+      "direction": "plugin_to_host",
+      "hex": "0102743107526f6d616e636501065468656d6573013301fd2f00",
+      "expect": "ok",
+      "request": "option_request.search"
+    },
+    {
+      "name": "option_page.values",
+      "type": "OptionPage",
+      "direction": "plugin_to_host",
+      "hex": "0202743107526f6d616e636501065468656d657302743909416476656e7475726500000001027631",
+      "expect": "ok",
+      "request": "option_request.values"
+    },
+    {
+      "name": "suggestions.one",
+      "type": "Suggestions",
+      "direction": "plugin_to_host",
+      "hex": "01074672696572656e00",
+      "expect": "ok"
+    },
+    {
+      "name": "suggestions.empty",
+      "type": "Suggestions",
+      "direction": "plugin_to_host",
+      "hex": "00",
+      "expect": "ok"
+    },
+    {
+      "name": "settings_form.duplicate_control",
+      "type": "SettingsForm",
+      "direction": "plugin_to_host",
+      "hex": "0107636f6e74656e7407436f6e74656e74000002056164756c74054164756c74000000000100056164756c74054164756c74000000000100",
+      "expect": "violation:duplicate.control:adult"
+    },
+    {
+      "name": "settings_form.bad_id",
+      "type": "SettingsForm",
+      "direction": "plugin_to_host",
+      "hex": "0107636f6e74656e7407436f6e74656e7400000106626164206964054164756c74000000000100",
+      "expect": "violation:chars.id"
+    },
+    {
+      "name": "settings_form.too_many_sections",
+      "type": "SettingsForm",
+      "direction": "plugin_to_host",
+      "hex": "210273300753656374696f6e0000000273310753656374696f6e0000000273320753656374696f6e0000000273330753656374696f6e0000000273340753656374696f6e0000000273350753656374696f6e0000000273360753656374696f6e0000000273370753656374696f6e0000000273380753656374696f6e0000000273390753656374696f6e000000037331300753656374696f6e000000037331310753656374696f6e000000037331320753656374696f6e000000037331330753656374696f6e000000037331340753656374696f6e000000037331350753656374696f6e000000037331360753656374696f6e000000037331370753656374696f6e000000037331380753656374696f6e000000037331390753656374696f6e000000037332300753656374696f6e000000037332310753656374696f6e000000037332320753656374696f6e000000037332330753656374696f6e000000037332340753656374696f6e000000037332350753656374696f6e000000037332360753656374696f6e000000037332370753656374696f6e000000037332380753656374696f6e000000037332390753656374696f6e000000037333300753656374696f6e000000037333310753656374696f6e000000037333320753656374696f6e000000",
+      "expect": "violation:count.sections"
+    },
+    {
+      "name": "control.select_default_missing",
+      "type": "Control",
+      "direction": "plugin_to_host",
+      "hex": "0673656c6563740653656c656374000000030e0001016105416c70686100010162",
+      "expect": "violation:control.default:select"
+    },
+    {
+      "name": "control.min_gt_max",
+      "type": "Control",
+      "direction": "plugin_to_host",
+      "hex": "04796561720459656172000000050414020000",
+      "expect": "violation:control.bounds:year"
+    },
+    {
+      "name": "control.condition_on_conditional",
+      "type": "SettingsForm",
+      "direction": "plugin_to_host",
+      "hex": "0107636f6e74656e7407436f6e74656e74000003056164756c74054164756c7400000000010004746167730454616773000001056164756c740104747275650409010474616773010000066e6573746564064e6573746564000001047461677301027431000100",
+      "expect": "violation:condition.target:nested"
+    },
+    {
+      "name": "control.condition_toggle_value",
+      "type": "SettingsForm",
+      "direction": "plugin_to_host",
+      "hex": "0107636f6e74656e7407436f6e74656e74000002056164756c74054164756c74000000000100066e6573746564064e6573746564000001056164756c740103796573000100",
+      "expect": "violation:condition.value:nested"
+    },
+    {
+      "name": "control.body_trailing_byte",
+      "type": "Control",
+      "direction": "plugin_to_host",
+      "hex": "056164756c74054164756c7400000000020000",
+      "expect": "violation:control.body:adult"
+    },
+    {
+      "name": "search_capabilities.secret_filter",
+      "type": "SearchCapabilities",
+      "direction": "plugin_to_host",
+      "hex": "0000010766696c746572730746696c746572730000010673656372657406536563726574000000020100",
+      "expect": "violation:control.context:secret"
+    },
+    {
+      "name": "search_capabilities.sort_catalog",
+      "type": "SearchCapabilities",
+      "direction": "plugin_to_host",
+      "hex": "000104736f727404536f7274000000030b010474616773010102743100",
+      "expect": "violation:control.context:sort"
+    },
+    {
+      "name": "option_page.no_progress",
+      "type": "OptionPage",
+      "direction": "plugin_to_host",
+      "hex": "0102743107526f6d616e63650001320000",
+      "expect": "violation:page.progress",
+      "request": "option_request.search"
+    },
+    {
+      "name": "option_page.unrequested_value",
+      "type": "OptionPage",
+      "direction": "plugin_to_host",
+      "hex": "01056f74686572054f7468657200000000",
+      "expect": "violation:page.values",
+      "request": "option_request.values"
+    },
+    {
+      "name": "option_page.too_many_options",
+      "type": "OptionPage",
+      "direction": "plugin_to_host",
+      "hex": "330274300354616700027431035461670002743203546167000274330354616700027434035461670002743503546167000274360354616700027437035461670002743803546167000274390354616700037431300354616700037431310354616700037431320354616700037431330354616700037431340354616700037431350354616700037431360354616700037431370354616700037431380354616700037431390354616700037432300354616700037432310354616700037432320354616700037432330354616700037432340354616700037432350354616700037432360354616700037432370354616700037432380354616700037432390354616700037433300354616700037433310354616700037433320354616700037433330354616700037433340354616700037433350354616700037433360354616700037433370354616700037433380354616700037433390354616700037434300354616700037434310354616700037434320354616700037434330354616700037434340354616700037434350354616700037434360354616700037434370354616700037434380354616700037434390354616700037435300354616700000000",
+      "expect": "violation:count.page_options",
+      "request": "option_request.search"
+    },
+    {
+      "name": "option_request.search",
+      "type": "OptionRequest",
+      "direction": "host_to_plugin",
+      "hex": "04746167730002726f3232",
+      "expect": "ok"
+    },
+    {
+      "name": "option_request.values",
+      "type": "OptionRequest",
+      "direction": "host_to_plugin",
+      "hex": "0474616773010202743102743902",
+      "expect": "ok"
+    },
+    {
+      "name": "filters.dense",
+      "type": "Filters",
+      "direction": "host_to_plugin",
+      "hex": "050673656c65637404736f727403057469746c6506746f67676c65056164756c74030566616c73650d696e74656765725f72616e67650479656172030b5b6e756c6c2c6e756c6c5d0c6d756c74695f73656c6563740667656e72657303055b2261225d0c6d756c74695f73656c656374047461677303025b5d",
+      "expect": "ok"
+    },
+    {
+      "name": "filters.empty",
+      "type": "Filters",
+      "direction": "host_to_plugin",
+      "hex": "00",
+      "expect": "ok"
+    },
+    {
+      "name": "option_request.utf8_distinct",
+      "type": "OptionRequest",
+      "direction": "host_to_plugin",
+      "hex": "0474616773010202c3a90365cc8102",
+      "expect": "ok"
+    },
+    {
+      "name": "option_request.utf8_composed",
+      "type": "OptionRequest",
+      "direction": "host_to_plugin",
+      "hex": "0474616773010102c3a901",
+      "expect": "ok"
+    },
+    {
+      "name": "option_page.utf8_distinct",
+      "type": "OptionPage",
+      "direction": "plugin_to_host",
+      "hex": "0202c3a9054c6162656c000365cc81054c6162656c00000000",
+      "expect": "ok",
+      "request": "option_request.utf8_distinct"
+    },
+    {
+      "name": "option_page.utf8_wrong_normalization",
+      "type": "OptionPage",
+      "direction": "plugin_to_host",
+      "hex": "010365cc81054c6162656c00000000",
+      "expect": "violation:page.values",
+      "request": "option_request.utf8_composed"
+    }
+  ],
+  "values": [
+    {
+      "kind": "toggle",
+      "canonical": "true",
+      "value": true
+    },
+    {
+      "kind": "toggle",
+      "canonical": "false",
+      "value": false
+    },
+    {
+      "kind": "toggle",
+      "canonical": "True",
+      "invalid": true
+    },
+    {
+      "kind": "toggle",
+      "canonical": "1",
+      "invalid": true
+    },
+    {
+      "kind": "toggle",
+      "canonical": "",
+      "invalid": true
+    },
+    {
+      "kind": "integer",
+      "canonical": "0",
+      "value": 0
+    },
+    {
+      "kind": "integer",
+      "canonical": "-42",
+      "value": -42
+    },
+    {
+      "kind": "integer",
+      "canonical": "9223372036854775807",
+      "value": 9223372036854775807
+    },
+    {
+      "kind": "integer",
+      "canonical": "-9223372036854775808",
+      "value": -9223372036854775808
+    },
+    {
+      "kind": "integer",
+      "canonical": "",
+      "value": null
+    },
+    {
+      "kind": "integer",
+      "canonical": "+1",
+      "invalid": true
+    },
+    {
+      "kind": "integer",
+      "canonical": "01",
+      "invalid": true
+    },
+    {
+      "kind": "integer",
+      "canonical": "-0",
+      "invalid": true
+    },
+    {
+      "kind": "integer",
+      "canonical": " 1",
+      "invalid": true
+    },
+    {
+      "kind": "integer",
+      "canonical": "1.0",
+      "invalid": true
+    },
+    {
+      "kind": "integer",
+      "canonical": "9223372036854775808",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[]",
+      "items": []
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"a\"]",
+      "items": [
+        "a"
+      ]
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"a,b\",\"c\\\"d\",\"e\\\\f\"]",
+      "items": [
+        "a,b",
+        "c\"d",
+        "e\\f"
+      ]
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"日本\",\"🙂\"]",
+      "items": [
+        "日本",
+        "🙂"
+      ]
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\\u001f\"]",
+      "items": [
+        "\u001f"
+      ],
+      "runtime_invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"é\",\"é\"]",
+      "items": ["é", "é"]
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\\u0000\"]",
+      "items": ["\u0000"],
+      "runtime_invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\u007f\"]",
+      "items": ["\u007f"],
+      "runtime_invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\u0085\"]",
+      "items": ["\u0085"],
+      "runtime_invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"a\" ]",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"a\",]",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "['a']",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"a\",\"a\"]",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\"]",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\\n\"]",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\\u001F\"]",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\\u0041\"]",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "[\"\\/\"]",
+      "invalid": true
+    },
+    {
+      "kind": "multi_select",
+      "canonical": "Action, Romance",
+      "invalid": true
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[2015,null]",
+      "lower": 2015,
+      "upper": null
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[null,2024]",
+      "lower": null,
+      "upper": 2024
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[null,null]",
+      "lower": null,
+      "upper": null
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[1,1]",
+      "lower": 1,
+      "upper": 1
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[2024,2015]",
+      "invalid": true
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[1]",
+      "invalid": true
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[1,2,3]",
+      "invalid": true
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[ 1,2]",
+      "invalid": true
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[01,2]",
+      "invalid": true
+    },
+    {
+      "kind": "integer_range",
+      "canonical": "[null]",
+      "invalid": true
+    }
+  ]
+}
