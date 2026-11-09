@@ -190,7 +190,7 @@ struct ContentKindTests {
     }
 
     @Test func anUpdateMustKeepTheEntrysKind() async throws {
-        let anime = try ItoPostcardEncoder().encode(MediaEntry.anime(Anime(key: "a", title: "A")))
+        let anime = try ItoPostcardEncoder(abiVersion: 2).encode(MediaEntry.anime(Anime(key: "a", title: "A")))
         let runner = try await plugin(abi2(kinds: 0b011) + """
             (func (export "get_media_update") (param i32 i32 i32 i32) (result i64)
               i64.const \(Self.packed(2048, anime.count)))
@@ -209,14 +209,14 @@ struct ContentKindTests {
         let page = MediaPageResult(
             entries: [.novel(Novel(key: "n", title: "N")), .anime(Anime(key: "a", title: "A"))],
             hasNextPage: true)
-        let bytes = try ItoPostcardEncoder().encode(page)
+        let bytes = try ItoPostcardEncoder(abiVersion: 2).encode(page)
         #expect(bytes[0] == 2 && bytes[1] == 2, "two entries, the first a novel (variant 2)")
-        let decoded = try ItoPostcardDecoder().decode(MediaPageResult.self, from: bytes)
+        let decoded = try ItoPostcardDecoder(abiVersion: 2).decode(MediaPageResult.self, from: bytes)
         #expect(decoded.entries.map(\.kind) == [.novel, .anime] && decoded.hasNextPage)
 
-        let scroller = try ItoPostcardEncoder().encode(HomeComponentValue.mediaScroller([], nil))
+        let scroller = try ItoPostcardEncoder(abiVersion: 2).encode(HomeComponentValue.mediaScroller([], nil))
         #expect(scroller.first == 14)
-        let bigScroller = try ItoPostcardEncoder().encode(HomeComponentValue.mediaBigScroller([], nil))
+        let bigScroller = try ItoPostcardEncoder(abiVersion: 2).encode(HomeComponentValue.mediaBigScroller([], nil))
         #expect(bigScroller.first == 16)
     }
 
@@ -229,8 +229,8 @@ struct ContentKindTests {
 
     @Test func anABI2PluginCannotAnswerWithAKindItDoesNotServe() async throws {
         let novel = Novel(key: "n", title: "N")
-        let novels = try ItoPostcardEncoder().encode(MediaPageResult(entries: [.novel(novel)], hasNextPage: false))
-        let home = try ItoPostcardEncoder().encode(
+        let novels = try ItoPostcardEncoder(abiVersion: 2).encode(MediaPageResult(entries: [.novel(novel)], hasNextPage: false))
+        let home = try ItoPostcardEncoder(abiVersion: 2).encode(
             HomeLayout(components: [HomeComponent(value: .novelScroller([novel], nil))]))
         let runner = try await plugin("""
             (func (export "ito_abi_version") (result i32) i32.const 2)

@@ -313,13 +313,14 @@ public struct Chapter: Codable, Sendable, Identifiable {
         paywalled = try container.decodeIfPresent(Bool.self, forKey: .paywalled)
         switch decoder.userInfo[postcardABIVersionKey] as? Int {
         case 1?: kind = nil
-        case .some:
+        case 2?:
             let value = try container.decode(Int32.self, forKey: .kind)
             guard let decoded = ContentKind(wireValue: value) else {
                 throw ItoError.postcardDecodingError("Unknown chapter kind \(value)")
             }
             kind = decoded
         case nil: kind = try container.decodeIfPresent(ContentKind.self, forKey: .kind)
+        case let abi?: throw ItoError.postcardDecodingError("A chapter has no layout for ABI \(abi)")
         }
     }
 
@@ -337,7 +338,7 @@ public struct Chapter: Codable, Sendable, Identifiable {
         switch encoder.userInfo[postcardABIVersionKey] as? Int {
         case 1?:
             break
-        case .some:
+        case 2?:
             // The runner resolves unknown kinds before sending a chapter to an ABI 2 plugin.
             guard let kind else {
                 throw ItoError.postcardEncodingError("A chapter sent to the plugin has no kind.")
@@ -345,6 +346,7 @@ public struct Chapter: Codable, Sendable, Identifiable {
             try container.encode(kind.wireValue, forKey: .kind)
         case nil:
             try container.encodeIfPresent(kind, forKey: .kind)
+        case let abi?: throw ItoError.postcardEncodingError("A chapter has no layout for ABI \(abi)")
         }
     }
 }

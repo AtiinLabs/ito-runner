@@ -23,7 +23,7 @@ struct PluginCompletionTests {
         var error = errorExport
         var data = ""
         if let failure {
-            let bytes = try ItoPostcardEncoder().encode(PluginErrorPayload(category: failure, message: "Unsupported operation"))
+            let bytes = try ItoPostcardEncoder(abiVersion: 2).encode(PluginErrorPayload(category: failure, message: "Unsupported operation"))
             data = "(data (i32.const 128) \"\(bytes.map { String(format: "\\%02x", $0) }.joined())\")"
             let packed = (UInt64(128) << 32) | UInt64(bytes.count)
             error = "(func (export \"ito_last_error\") (result i64) i64.const \(packed))"

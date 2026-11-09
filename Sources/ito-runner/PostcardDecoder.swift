@@ -1,12 +1,17 @@
 import Foundation
 
+/// The ABI to name for payloads whose layout is the same in every supported ABI: host-module
+/// requests and responses, settings and controls, error reports and image requests. Layouts that
+/// differ by ABI (chapters) take the loaded plugin's ABI instead.
+let sharedLayoutABIVersion = 2
+
 /// A custom Decoder that decodes Postcard binary format into Swift `Decodable` types.
 public struct ItoPostcardDecoder: Sendable {
 
     /// The plugin ABI whose layouts to read (`ItoRunner.supportedABIVersions`).
     public let abiVersion: Int
 
-    public init(abiVersion: Int = ItoRunner.supportedABIVersions.upperBound) {
+    public init(abiVersion: Int) {
         self.abiVersion = abiVersion
     }
 

@@ -71,9 +71,9 @@ struct PluginImageRequestTests {
 
     @Test func requestsWithoutHeadersAndWithEmptyHeadersRemainDistinct() throws {
         var bytes: [UInt8] = [10] + Array("http://x/p".utf8) + [0]
-        #expect(try ItoPostcardDecoder().decode(PluginImageRequest.self, from: bytes).headers == nil)
+        #expect(try ItoPostcardDecoder(abiVersion: 2).decode(PluginImageRequest.self, from: bytes).headers == nil)
         bytes[bytes.count - 1] = 1
         bytes.append(0)
-        #expect(try ItoPostcardDecoder().decode(PluginImageRequest.self, from: bytes).headers == [:])
+        #expect(try ItoPostcardDecoder(abiVersion: 2).decode(PluginImageRequest.self, from: bytes).headers == [:])
     }
 }

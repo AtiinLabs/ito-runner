@@ -172,13 +172,13 @@ struct PostcardRangeTests {
     @Test func anInt32OutOfRangeThrowsInsteadOfTrapping() {
         // zig-zag 2^31, one past Int32.max
         #expect(throws: ItoError.postcardDecodingError("Value 2147483648 does not fit in Int32.")) {
-            try ItoPostcardDecoder().decode(Int32Holder.self, from: [0x80, 0x80, 0x80, 0x80, 0x10])
+            try ItoPostcardDecoder(abiVersion: 2).decode(Int32Holder.self, from: [0x80, 0x80, 0x80, 0x80, 0x10])
         }
     }
 
     @Test func aUInt16OutOfRangeThrowsInsteadOfTrapping() {
         #expect(throws: ItoError.postcardDecodingError("Value 70000 does not fit in UInt16.")) {
-            try ItoPostcardDecoder().decode(UInt16Holder.self, from: [0xF0, 0xA2, 0x04])
+            try ItoPostcardDecoder(abiVersion: 2).decode(UInt16Holder.self, from: [0xF0, 0xA2, 0x04])
         }
     }
 
@@ -186,7 +186,7 @@ struct PostcardRangeTests {
         // UInt64.max as a varint
         let length: [UInt8] = Array(repeating: 0xFF, count: 9) + [0x01]
         #expect(throws: ItoError.postcardDecodingError("Value 18446744073709551615 does not fit in Int.")) {
-            try ItoPostcardDecoder().decode([String].self, from: length)
+            try ItoPostcardDecoder(abiVersion: 2).decode([String].self, from: length)
         }
     }
 }

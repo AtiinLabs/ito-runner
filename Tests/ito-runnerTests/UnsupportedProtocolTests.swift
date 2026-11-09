@@ -6,7 +6,7 @@ import WAT
 @Suite("Unambiguous optional export participation")
 struct UnsupportedProtocolTests {
     private func module(version: Int, category: PluginErrorCategory) throws -> [UInt8] {
-        let payload = try ItoPostcardEncoder().encode(
+        let payload = try ItoPostcardEncoder(abiVersion: 2).encode(
             PluginErrorPayload(category: category, message: "Unsupported operation")
         )
         let encoded = payload.map { String(format: "\\%02x", $0) }.joined()

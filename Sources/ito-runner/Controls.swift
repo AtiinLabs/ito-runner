@@ -300,7 +300,7 @@ public struct Control: Codable, Equatable, Sendable {
         let body = try c.decode([UInt8].self, forKey: .kindBody)
         guard body.count <= ControlLimits.bodyBytes else { throw ControlContractViolation(.lengthBody, id: id) }
         do {
-            let decoder = ItoPostcardDecoder()
+            let decoder = ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion)
             switch tag {
             case 0: kind = .toggle(try decoder.decodeControls(ToggleControl.self, from: body))
             case 1: kind = .text(try decoder.decodeControls(TextControl.self, from: body))
@@ -319,7 +319,7 @@ public struct Control: Codable, Equatable, Sendable {
         try c.encode(id, forKey: .id); try c.encode(title, forKey: .title)
         try c.encodeIfPresent(summary, forKey: .summary); try c.encode(flags, forKey: .flags)
         try c.encode(visibleWhen, forKey: .visibleWhen); try c.encode(kind.tag, forKey: .kindTag)
-        let encoder = ItoPostcardEncoder()
+        let encoder = ItoPostcardEncoder(abiVersion: sharedLayoutABIVersion)
         let body: [UInt8]
         switch kind {
         case .toggle(let value): body = try encoder.encode(value)

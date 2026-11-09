@@ -7,8 +7,8 @@ import Testing
 @Suite("Detailed Postcard Serialization Tests")
 struct PostcardDetailedTests {
 
-    let encoder = ItoPostcardEncoder()
-    let decoder = ItoPostcardDecoder()
+    let encoder = ItoPostcardEncoder(abiVersion: 2)
+    let decoder = ItoPostcardDecoder(abiVersion: 2)
 
     // MARK: - Integer Tests (Varint & ZigZag)
 

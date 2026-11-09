@@ -32,6 +32,7 @@ let package = Package(
             name: "ito-runner",
             dependencies: [
                 .product(name: "WasmKit", package: "WasmKit"),
+                .product(name: "WasmParser", package: "WasmKit"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
                 .product(name: "ZIPFoundation", package: "ZIPFoundation")
             ]
