@@ -6,7 +6,7 @@ import WasmKit
 
 private final class ControlsWaitingNet: NetModule, Sendable {
     private let started = AsyncStream<Void>.makeStream()
-    func fetch(request: NetRequest) async throws -> NetResponse {
+    func fetch(request: NetRequest, context: NetworkOperationContext) async throws -> NetResponse {
         let wait = AsyncStream<Void>.makeStream()
         started.continuation.yield()
         // AsyncStream terminates its suspended iterator on cancellation; no timing-based gate.
@@ -54,9 +54,9 @@ struct ControlsCancellationTests {
     @Test func cancelledBeforeStartNeverCallsOptionExport() async throws {
         let net = ControlsWaitingNet(), request = OptionRequest(catalog: "tags", query: .search(text: "", offset: 0), limit: 50)
         let runner = try await runner(net)
-        let first = Task { try await runner.getHome() }
+        let first = Task { try await runner.getHome(context: .test) }
         await net.nextRequest()
-        let second = Task { try await runner.getOptionPage(request) }
+        let second = Task { try await runner.getOptionPage(request, context: .test) }
         second.cancel()
         first.cancel()
         await #expect(throws: CancellationError.self) { try await first.value }
@@ -66,7 +66,7 @@ struct ControlsCancellationTests {
     @Test func cancelledDuringOptionHostWorkNeverReturnsLateSuccess() async throws {
         let net = ControlsWaitingNet(), request = OptionRequest(catalog: "tags", query: .search(text: "", offset: 0), limit: 50)
         let runner = try await runner(net)
-        let call = Task { try await runner.getOptionPage(request) }
+        let call = Task { try await runner.getOptionPage(request, context: .test) }
         await net.nextRequest()
         call.cancel()
         await #expect(throws: CancellationError.self) { try await call.value }
@@ -76,7 +76,7 @@ struct ControlsCancellationTests {
         let net = ControlsWaitingNet()
         let runner = try await runner(net)
         for _ in 0..<2 {
-            let call = Task { try await runner.getSearchCapabilities(kind: .manga) }
+            let call = Task { try await runner.getSearchCapabilities(kind: .manga, context: .test) }
             await net.nextRequest()
             call.cancel()
             await #expect(throws: CancellationError.self) { try await call.value }

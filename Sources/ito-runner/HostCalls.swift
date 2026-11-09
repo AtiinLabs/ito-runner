@@ -16,8 +16,24 @@ public struct HostCallTimeouts: Sendable, Equatable {
 }
 
 /// Cancellation of one runner job. The caller's task cancels it; host work the job is waiting on
-/// registers what to do when that happens.
+/// registers what to do when that happens. It also carries the job's immutable host context and
+/// the first policy refusal recorded for it. A refusal recorded before cancellation wins; one
+/// attempted after cancellation is ignored, so whichever happened first decides the outer result.
 final class CallToken: @unchecked Sendable {
+    let context: NetworkOperationContext
+    private var recordedPolicyOutcome: HostNetworkPolicyOutcome?
+
+    init(context: NetworkOperationContext) { self.context = context }
+
+    var policyOutcome: HostNetworkPolicyOutcome? {
+        lock.withLock { recordedPolicyOutcome }
+    }
+
+    func recordPolicyOutcome(_ outcome: HostNetworkPolicyOutcome) {
+        lock.withLock {
+            if !cancelled, recordedPolicyOutcome == nil { recordedPolicyOutcome = outcome }
+        }
+    }
     private let lock = NSLock()
     private var cancelled = false
     private var cancelAction: (@Sendable () -> Void)?
@@ -86,11 +102,11 @@ extension WasmBridge {
     /// work finishes, the call is cancelled, or `timeout` passes. On cancellation or timeout the
     /// work is cancelled and its late result is dropped.
     func waitForHostWork<Value: Sendable>(
+        token: CallToken,
         timeout: TimeInterval,
         _ work: @escaping @Sendable () async throws -> Value
     ) -> HostCallOutcome<Value> {
-        let token = activeCallToken
-        if token?.isCancelled == true { return .cancelled }
+        if token.isCancelled { return .cancelled }
 
         let cell = HostCallCell<Value>()
         let task = Task {
@@ -100,12 +116,12 @@ extension WasmBridge {
                 cell.finish(.failed(error))
             }
         }
-        token?.setCancelAction {
+        token.setCancelAction {
             cell.finish(.cancelled)
             task.cancel()
         }
         let outcome = cell.wait(until: .now() + timeout)
-        token?.setCancelAction(nil)
+        token.setCancelAction(nil)
         if case .completed = outcome {} else { task.cancel() }
         return outcome
     }

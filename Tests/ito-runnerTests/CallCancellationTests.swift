@@ -11,15 +11,13 @@ private final class HangingNetModule: NetModule, @unchecked Sendable {
     private let started = AsyncStream<Void>.makeStream()
     private let cancelled = AsyncStream<Void>.makeStream()
 
-    func fetch(request: NetRequest) async throws -> NetResponse {
+    func fetch(request: NetRequest, context: NetworkOperationContext) async throws -> NetResponse {
+        let wait = AsyncStream<Void>.makeStream()
         started.continuation.yield()
-        do {
-            try await Task.sleep(nanoseconds: 3_600_000_000_000)
-        } catch {
-            cancelled.continuation.yield()
-            throw error
-        }
-        return NetResponse(status: 200, headers: [:], body: [])
+        var iterator = wait.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        cancelled.continuation.yield()
+        throw CancellationError()
     }
 
     func requestStarted() async {
@@ -85,7 +83,7 @@ struct CallCancellationTests {
         let net = HangingNetModule()
         let runner = try await loadRunner(net: net)
 
-        let call = Task { try await runner.getHome() }
+        let call = Task { try await runner.getHome(context: .test) }
         await net.requestStarted()
         call.cancel()
 
@@ -99,7 +97,7 @@ struct CallCancellationTests {
 
         // The plugin gets a 500 response, fails, and the call reports that failure.
         await #expect(throws: ItoError.pluginFailed(function: "get_home", reason: nil)) {
-            try await runner.getHome()
+            try await runner.getHome(context: .test)
         }
         await net.requestCancelled()
     }
@@ -109,7 +107,7 @@ struct CallCancellationTests {
         let runner = try await loadRunner(net: net)
         let listing = Listing(id: "all", name: "All", kind: 0)
 
-        let first = Task { try await runner.getHome() }
+        let first = Task { try await runner.getHome(context: .test) }
         await net.requestStarted()
         let second = Task { try await runner.getMangaList(listing: listing, page: 1) }
         second.cancel()
@@ -129,13 +127,15 @@ struct CallCancellationTests {
 private final class HangingWebviewModule: WebviewModule, @unchecked Sendable {
     private let started = AsyncStream<Void>.makeStream()
 
-    func loadUrl(request: WebviewRequest) async throws -> WebviewResponse {
+    func loadUrl(request: WebviewRequest, context: NetworkOperationContext) async throws -> WebviewResponse {
+        let wait = AsyncStream<Void>.makeStream()
         started.continuation.yield()
-        try await Task.sleep(nanoseconds: 3_600_000_000_000)
-        return WebviewResponse(url: request.url, html: "")
+        var iterator = wait.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        throw CancellationError()
     }
 
-    func executeJs(script: String) async throws -> String { "" }
+    func executeJs(script: String, context: NetworkOperationContext) async throws -> String { "" }
 
     func loadStarted() async {
         var iterator = started.stream.makeAsyncIterator()
@@ -158,6 +158,7 @@ struct HostWorkWaitTests {
         let net = HangingNetModule()
         // Configured before it reaches the queue, then used only there, as in the runner.
         nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        bridge.activeCallToken = CallToken(context: .test)
         bridge.netModule = net
         bridge.timeouts = HostCallTimeouts(net: 0.05, webview: 0.05)
 
@@ -173,12 +174,13 @@ struct HostWorkWaitTests {
 
     @Test func aServerCannotClaimItsResponseNeverArrived() async throws {
         struct Spoofing: NetModule {
-            func fetch(request: NetRequest) async throws -> NetResponse {
+            func fetch(request: NetRequest, context: NetworkOperationContext) async throws -> NetResponse {
                 NetResponse(status: 200, headers: ["x-ito-transport-error": "fake", "ETag": "1"], body: [1])
             }
         }
         // Configured before it reaches the queue, then used only there, as in the runner.
         nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        bridge.activeCallToken = CallToken(context: .test)
         bridge.netModule = Spoofing()
 
         let response = try await onRunnerQueue { [request] in
@@ -195,7 +197,7 @@ struct HostWorkWaitTests {
         // Configured before it reaches the queue, then used only there, as in the runner.
         nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
         bridge.netModule = net
-        let token = CallToken()
+        let token = CallToken(context: .test)
         bridge.activeCallToken = token
 
         let response = Task { [request] in
@@ -214,12 +216,12 @@ struct HostWorkWaitTests {
         // Configured before it reaches the queue, then used only there, as in the runner.
         nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
         bridge.webviewModule = webview
-        let token = CallToken()
+        let token = CallToken(context: .test)
         bridge.activeCallToken = token
 
         let result = Task {
             try await onRunnerQueue {
-                try bridge.webviewForPlugin { try await $0.loadUrl(request: WebviewRequest(url: "http://x", script: nil)) }
+                try bridge.webviewForPlugin { module, context in try await module.loadUrl(request: WebviewRequest(url: "http://x", script: nil), context: context) }
             }
         }
         await webview.loadStarted()
@@ -231,12 +233,13 @@ struct HostWorkWaitTests {
     @Test func aWebviewLoadPastTheDeadlineThrows() async throws {
         // Configured before it reaches the queue, then used only there, as in the runner.
         nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        bridge.activeCallToken = CallToken(context: .test)
         bridge.webviewModule = HangingWebviewModule()
         bridge.timeouts = HostCallTimeouts(net: 0.05, webview: 0.05)
 
         await #expect(throws: ItoError.hostModuleError(domain: "webview", message: "The page took too long to respond.")) {
             try await onRunnerQueue {
-                try bridge.webviewForPlugin { try await $0.loadUrl(request: WebviewRequest(url: "http://x", script: nil)) }
+                try bridge.webviewForPlugin { module, context in try await module.loadUrl(request: WebviewRequest(url: "http://x", script: nil), context: context) }
             }
         }
     }

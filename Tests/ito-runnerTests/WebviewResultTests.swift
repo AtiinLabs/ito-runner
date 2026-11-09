@@ -5,6 +5,13 @@ import WasmKit
 
 @testable import ito_runner
 
+private extension ItoRunner {
+    /// Lets a low-level FFI test call an export directly, bypassing the public serialized API.
+    func activateTestCallToken() {
+        bridge?.activeCallToken = CallToken(context: .test)
+    }
+}
+
 /// Script results come from `scripts`, in order; with none left, the script hangs until cancelled.
 private final class ScriptedWebviewModule: WebviewModule, @unchecked Sendable {
     private let lock = NSLock()
@@ -15,16 +22,18 @@ private final class ScriptedWebviewModule: WebviewModule, @unchecked Sendable {
         scripts = results
     }
 
-    func loadUrl(request: WebviewRequest) async throws -> WebviewResponse {
+    func loadUrl(request: WebviewRequest, context: NetworkOperationContext) async throws -> WebviewResponse {
         throw ItoError.hostModuleError(domain: "webview", message: "unused")
     }
 
-    func executeJs(script: String) async throws -> String {
+    func executeJs(script: String, context: NetworkOperationContext) async throws -> String {
         let next = lock.withLock { scripts.isEmpty ? nil : scripts.removeFirst() }
         if let next { return next }
+        let wait = AsyncStream<Void>.makeStream()
         started.continuation.yield()
-        try await Task.sleep(nanoseconds: 3_600_000_000_000)
-        return "late"
+        var iterator = wait.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        throw CancellationError()
     }
 
     func scriptStarted() async {
@@ -69,6 +78,7 @@ struct WebviewResultTests {
 
     @Test func anEmptyScriptResultIsALengthOfZeroNotAFailure() async throws {
         let runner = try await loadRunner(ScriptedWebviewModule(results: ["", "42"]))
+        await runner.activateTestCallToken()
 
         #expect(try await length(runner, "run_js") == 0)
         #expect(try await length(runner, "run_js") == 2)
@@ -78,7 +88,7 @@ struct WebviewResultTests {
         let webview = ScriptedWebviewModule(results: [])
         let runner = try await loadRunner(webview)
 
-        let call = Task { try await runner.getHome() }
+        let call = Task { try await runner.getHome(context: .test) }
         await webview.scriptStarted()
         call.cancel()
 

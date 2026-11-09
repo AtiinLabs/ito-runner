@@ -63,7 +63,7 @@ struct PluginCompatibilityTests {
             let runner = ItoRunner()
             try await runner.loadPlugin(fromBytes: wasm)
             await #expect(throws: ItoError.pluginFailed(function: "get_home", reason: nil)) {
-                try await runner.getHome()
+                try await runner.getHome(context: .test)
             }
         }
     }

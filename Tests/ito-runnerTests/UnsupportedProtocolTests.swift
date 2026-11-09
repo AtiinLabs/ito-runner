@@ -44,12 +44,12 @@ struct UnsupportedProtocolTests {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: module(version: version, category: category))
         if unhandled {
-            #expect(try await runner.getImageRequest("api/v1/cover") == nil)
+            #expect(try await runner.getImageRequest("api/v1/cover", context: .test) == nil)
         } else {
             await #expect(throws: ItoError.pluginFailed(
                 function: "get_image_request", reason: "Unsupported operation", category: category
             )) {
-                try await runner.getImageRequest("api/v1/cover")
+                try await runner.getImageRequest("api/v1/cover", context: .test)
             }
         }
     }
@@ -69,11 +69,11 @@ struct UnsupportedProtocolTests {
     @Test func reloadingAnOlderPluginResetsTheVersionAndFailedLoadsDoNotReplaceIt() async throws {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: module(version: 2, category: .other))
-        await #expect(throws: ItoError.self) { try await runner.getImageRequest("cover") }
+        await #expect(throws: ItoError.self) { try await runner.getImageRequest("cover", context: .test) }
         let broken = try wat2wasm(#"(module (memory (export "memory") 1) (func (export "ito_error_version") (result i32) unreachable))"#)
         await #expect(throws: ItoError.self) { try await runner.loadPlugin(fromBytes: broken) }
-        await #expect(throws: ItoError.self) { try await runner.getImageRequest("cover") }
+        await #expect(throws: ItoError.self) { try await runner.getImageRequest("cover", context: .test) }
         try await runner.loadPlugin(fromBytes: module(version: 0, category: .other))
-        #expect(try await runner.getImageRequest("cover") == nil)
+        #expect(try await runner.getImageRequest("cover", context: .test) == nil)
     }
 }

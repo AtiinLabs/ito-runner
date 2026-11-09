@@ -27,7 +27,7 @@ public actor ItoRunner {
     private var capabilitiesByKind: [Int32: CapabilitiesEntry] = [:]
 
     /// The FFI Bridge that connects Host Modules to Wasm. Created upon plugin load.
-    public var bridge: WasmBridge?
+    var bridge: WasmBridge?
 
     public var netModule: NetModule?
     public var htmlModule: HtmlModule?
@@ -36,40 +36,58 @@ public actor ItoRunner {
     public var envModule: EnvModule?
     public var webviewModule: WebviewModule?
 
-    private let executionQueue = DispatchQueue(label: "moe.itoapp.runner.execution")
+    let executionQueue = DispatchQueue(label: "moe.itoapp.runner.execution")
+    // Loading is synchronous. Refuse a reload while Wasm is executing rather than replacing
+    // its memory underneath it or blocking an actor that host work may need.
+    private final class InvocationState: @unchecked Sendable {
+        let lock = NSLock()
+        // Written only by actor-isolated loading under lock; queue reads hold the same lock.
+        var generation = UUID()
+    }
+    private let invocationState = InvocationState()
 
     /// How long host work (network, web view) may block a plugin call. Applies to plugins loaded
     /// after it is set.
     public private(set) var hostCallTimeouts = HostCallTimeouts()
 
     /// Runs one job on the runner's queue, one at a time. Cancelling the caller's task skips the job
-    /// if it hasn't started, and cancels host work it is waiting on if it has; either way the caller
-    /// gets `CancellationError`, never the failure the cancellation caused in the plugin.
-    private func performSerialized<T>(_ operation: @escaping () throws -> T) async throws -> T {
+    /// if it hasn't started, and cancels host work it is waiting on if it has. Of a host policy
+    /// refusal and a cancellation, whichever happened first is the outcome: a refusal recorded
+    /// first throws `networkPolicy`, a cancellation first throws `CancellationError`. Either way
+    /// it beats whatever the plugin made of the failed host call. A job queued before a reload
+    /// throws `pluginReloaded` without running.
+    func performSerialized<T: Sendable>(context: NetworkOperationContext, _ operation: @escaping () throws -> T) async throws -> T {
         try Task.checkCancellation()
-        let token = CallToken()
+        let token = CallToken(context: context)
         // Read on the actor: the queue never touches runner state after resuming the caller.
         let bridge = self.bridge
+        let state = invocationState
+        let generation = state.generation
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 executionQueue.async {
-                    guard !token.isCancelled else {
-                        continuation.resume(throwing: CancellationError())
-                        return
-                    }
-                    bridge?.activeCallToken = token
-                    do {
-                        let result = try operation()
+                    state.lock.lock()
+                    let result: Result<T, any Error>
+                    if token.isCancelled {
+                        result = .failure(CancellationError())
+                    } else if generation != state.generation {
+                        result = .failure(ItoError.pluginReloaded)
+                    } else {
+                        bridge?.clearOperationState()
+                        bridge?.activeCallToken = token
+                        let guestResult = Result { try operation() }
                         bridge?.activeCallToken = nil
-                        if token.isCancelled {
-                            continuation.resume(throwing: CancellationError())
+                        bridge?.clearOperationState()
+                        if let outcome = token.policyOutcome {
+                            result = .failure(ItoError.networkPolicy(outcome))
+                        } else if token.isCancelled {
+                            result = .failure(CancellationError())
                         } else {
-                            continuation.resume(returning: result)
+                            result = guestResult
                         }
-                    } catch {
-                        bridge?.activeCallToken = nil
-                        continuation.resume(throwing: token.isCancelled ? CancellationError() : error)
                     }
+                    state.lock.unlock()
+                    continuation.resume(with: result)
                 }
             }
         } onCancel: {
@@ -123,7 +141,11 @@ public actor ItoRunner {
 
     /// Loads a plugin directly from a WebAssembly byte array. A plugin that imports host functions
     /// this runner lacks, has a start section, or was built for an unsupported ABI is refused
-    /// before anything of it is instantiated, so none of its code runs.
+    /// before anything of it is instantiated, so none of its code runs. A module that passes those
+    /// checks throws `reloadDuringActiveExport` instead of replacing executing Wasm memory. A
+    /// successful reload makes queued calls from the previous generation throw `pluginReloaded`.
+    /// Use a fresh runner for a new source/account session or independent simultaneous
+    /// image/download work.
     public func loadPlugin(fromBytes wasmBytes: [UInt8]) throws {
         do {
             // 1. Read what the module declares without instantiating it.
@@ -173,6 +195,11 @@ public actor ItoRunner {
             }
             let imports = WasmBridge.imports(from: importTable)
 
+            // Refusals above report what is wrong with the module, whether or not an export is
+            // running. From here on the loaded plugin is replaced, so no export may be executing.
+            guard invocationState.lock.try() else { throw ItoError.reloadDuringActiveExport }
+            defer { invocationState.lock.unlock() }
+
             // 5. Instantiate the plugin, and keep it only if its exports report what the static
             // read found and it exports its memory. Nothing of a previously loaded plugin is
             // touched until then. The equality checks below guard the static reader's mapping of
@@ -203,6 +230,7 @@ public actor ItoRunner {
             self.abiVersion = abi
             self.supportedKinds = kinds
             self.capabilitiesByKind.removeAll()
+            invocationState.generation = UUID()
 
         } catch let error as ItoError {
             throw error
@@ -272,7 +300,7 @@ public actor ItoRunner {
     ///   - length: The number of bytes to read.
     /// - Returns: An array of bytes.
     /// - Throws: `ItoError.memoryOutOfBounds` if the requested range is outside memory bounds.
-    public func readMemory(offset: Int, length: Int) throws -> [UInt8] {
+    func readMemory(offset: Int, length: Int) throws -> [UInt8] {
         guard let memory = memory else {
             throw ItoError.wasmTrap("Memory is not initialized.")
         }
@@ -292,7 +320,7 @@ public actor ItoRunner {
     ///   - offset: The starting byte offset in Wasm memory.
     ///   - bytes: The data to write.
     /// - Throws: `ItoError.memoryOutOfBounds` if the requested range is outside memory bounds.
-    public func writeMemory(offset: Int, bytes: [UInt8]) throws {
+    func writeMemory(offset: Int, bytes: [UInt8]) throws {
         try writeMemoryBytes(offset: offset, bytes: bytes)
     }
 
@@ -324,7 +352,7 @@ public actor ItoRunner {
     /// - Returns: An array of resulting Wasm primitive values
     /// - Throws: `ItoError` on execution failure or missing export. Errors raised by host modules
     ///   during the call (e.g. `hostModuleError`) are rethrown as they are.
-    public func executeExport(_ name: String, args: [Value] = []) throws -> [Value] {
+    func executeExport(_ name: String, args: [Value] = []) throws -> [Value] {
         guard let instance = instance else {
             throw ItoError.wasmTrap("Instance is not initialized.")
         }
@@ -482,16 +510,17 @@ public actor ItoRunner {
                 entry = .available(try decodeControls("get_search_capabilities") { try ControlsDecoder.searchCapabilities(bytes) })
             } else { entry = .absent }
         } catch let error as ItoError where !error.isCrash {
-            if bridge?.activeCallToken?.isCancelled == true { throw CancellationError() }
+            // Cancellation and policy are decided after the entry is built, below, never cached.
             entry = .failed(error)
         }
+        if let outcome = bridge?.activeCallToken?.policyOutcome { throw ItoError.networkPolicy(outcome) }
         if bridge?.activeCallToken?.isCancelled == true { throw CancellationError() }
         capabilitiesByKind[kind] = entry
         return entry
     }
 
-    public func getSettingsSurface() async throws -> SettingsSurface? {
-        try await performSerialized {
+    public func getSettingsSurface(context: NetworkOperationContext) async throws -> SettingsSurface? {
+        try await performSerialized(context: context) {
             var formFailure: ItoError?
             do {
                 if let bytes = try self.callBounded("get_settings_form", [], parameters: [], maxBytes: ControlLimits.formBytes) {
@@ -506,9 +535,9 @@ public actor ItoRunner {
         }
     }
 
-    public func getSearchCapabilities(kind: MediaKind?) async throws -> SearchCapabilities? {
+    public func getSearchCapabilities(kind: MediaKind?, context: NetworkOperationContext) async throws -> SearchCapabilities? {
         guard abiVersion >= 2, kind.map({ supportedKinds.contains($0) }) ?? true else { return nil }
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             switch try self.capabilities(kind?.wireValue ?? -1) {
             case .available(let capabilities): return capabilities
             case .absent: return nil
@@ -517,19 +546,19 @@ public actor ItoRunner {
         }
     }
 
-    public func getOptionPage(_ request: OptionRequest) async throws -> OptionPage? {
+    public func getOptionPage(_ request: OptionRequest, context: NetworkOperationContext) async throws -> OptionPage? {
         try decodeControls("get_option_page") { try ControlValidation.request(request) }
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             guard let bytes = try self.callBounded("get_option_page", [.bytes(try ItoPostcardEncoder(abiVersion: sharedLayoutABIVersion).encode(request))],
                 parameters: [.i32, .i32], maxBytes: ControlLimits.optionPageBytes) else { return nil }
             return try self.decodeControls("get_option_page") { try ControlsDecoder.optionPage(bytes, request: request) }
         }
     }
 
-    public func getSearchSuggestions(query: String, kind: MediaKind?) async throws -> [SearchSuggestion]? {
+    public func getSearchSuggestions(query: String, kind: MediaKind?, context: NetworkOperationContext) async throws -> [SearchSuggestion]? {
         guard (1...256).contains(query.utf8.count), abiVersion >= 2,
               kind.map({ supportedKinds.contains($0) }) ?? true else { return nil }
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             guard case .available(let capabilities) = try self.capabilities(kind?.wireValue ?? -1),
                   capabilities.flags.contains(.suggestions) else { return nil }
             guard let bytes = try self.callBounded("get_search_suggestions", [.bytes(Array(query.utf8)), .int(kind?.wireValue ?? -1)],
@@ -577,9 +606,9 @@ public actor ItoRunner {
     // MARK: - Core Execution API
 
     /// Executes `get_home()`
-    public func getHome() async throws -> HomeLayout {
+    public func getHome(context: NetworkOperationContext) async throws -> HomeLayout {
         let contract = self.contract
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             let home = try self.callDecoding(HomeLayout.self, "get_home", abi: contract.abi)
             try Self.requireServed(home.components.flatMap(\.value.entries), by: contract, in: "get_home")
             return home
@@ -587,8 +616,8 @@ public actor ItoRunner {
     }
 
     /// Executes `get_settings()` if exported by the plugin. Nil when the plugin has no settings.
-    public func getSettings() async throws -> SettingsSchema? {
-        return try await performSerialized {
+    public func getSettings(context: NetworkOperationContext) async throws -> SettingsSchema? {
+        return try await performSerialized(context: context) {
             guard self.isExported("get_settings"),
                 let bytes = try self.callOptional("get_settings")
             else { return nil }
@@ -597,8 +626,8 @@ public actor ItoRunner {
     }
 
     /// Optional settings diagnostics. An empty array means none are declared; nil means unsupported.
-    public func getSettingsActions() async throws -> [SettingsAction]? {
-        try await performSerialized {
+    public func getSettingsActions(context: NetworkOperationContext) async throws -> [SettingsAction]? {
+        try await performSerialized(context: context) {
             guard self.isExported("get_settings_actions"),
                 let bytes = try self.callOptional("get_settings_actions")
             else { return nil }
@@ -608,8 +637,8 @@ public actor ItoRunner {
 
     /// Runs an explicitly requested diagnostic. Hosts must provide temporary settings and must not
     /// persist writes made during the action. An empty success message is distinct from unsupported.
-    public func runSettingsAction(_ actionID: String) async throws -> String? {
-        try await performSerialized {
+    public func runSettingsAction(_ actionID: String, context: NetworkOperationContext) async throws -> String? {
+        try await performSerialized(context: context) {
             guard self.isExported("run_settings_action"),
                 let bytes = try self.callOptional("run_settings_action", [.bytes(Array(actionID.utf8))])
             else { return nil }
@@ -618,8 +647,8 @@ public actor ItoRunner {
     }
 
     /// Advisory local-only validation. Empty means valid; nil means validation isn't implemented.
-    public func validateSettings() async throws -> [SettingIssue]? {
-        try await performSerialized {
+    public func validateSettings(context: NetworkOperationContext) async throws -> [SettingIssue]? {
+        try await performSerialized(context: context) {
             guard self.isExported("validate_settings"),
                 let bytes = try self.callOptional("validate_settings")
             else { return nil }
@@ -628,9 +657,9 @@ public actor ItoRunner {
     }
 
     /// Executes `handle_url()` if exported by the plugin. Nil when the plugin doesn't handle the URL.
-    public func handleUrl(_ url: String) async throws -> LinkValue? {
+    public func handleUrl(_ url: String, context: NetworkOperationContext) async throws -> LinkValue? {
         let abi = abiVersion
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             guard self.isExported("handle_url"),
                 let bytes = try self.callOptional("handle_url", [.bytes(Array(url.utf8))])
             else { return nil }
@@ -641,8 +670,8 @@ public actor ItoRunner {
 
     /// Executes `handle_image()` if exported by the plugin. Nil when the plugin doesn't handle images;
     /// throws `pluginFailed` when it tried and failed (e.g. refused the URL).
-    public func handleImage(_ url: String) async throws -> Data? {
-        return try await performSerialized {
+    public func handleImage(_ url: String, context: NetworkOperationContext) async throws -> Data? {
+        return try await performSerialized(context: context) {
             guard self.isExported("handle_image"),
                 let bytes = try self.callOptional("handle_image", [.bytes(Array(url.utf8))])
             else { return nil }
@@ -652,8 +681,8 @@ public actor ItoRunner {
 
     /// Configured origins authorized for host image fetching, independently of image input.
     /// Nil when an older plugin doesn't export this or reports Unsupported.
-    public func getImageOrigins() async throws -> [String]? {
-        try await performSerialized {
+    public func getImageOrigins(context: NetworkOperationContext) async throws -> [String]? {
+        try await performSerialized(context: context) {
             guard self.isExported("get_image_origins"),
                   let bytes = try self.callOptional("get_image_origins") else { return nil }
             return try self.postcardDecoder.decode([String].self, from: bytes)
@@ -663,8 +692,8 @@ public actor ItoRunner {
     /// Resolves an image locator without fetching bytes. Nil means this optional export is
     /// absent or unsupported; a reported failure is a refusal and must not trigger another
     /// fetch path. Hosts validate the returned URL against getImageOrigins before fetching.
-    public func getImageRequest(_ locator: String) async throws -> PluginImageRequest? {
-        try await performSerialized {
+    public func getImageRequest(_ locator: String, context: NetworkOperationContext) async throws -> PluginImageRequest? {
+        try await performSerialized(context: context) {
             guard self.isExported("get_image_request"),
                   let bytes = try self.callOptional("get_image_request", [.bytes(Array(locator.utf8))])
             else { return nil }
@@ -733,9 +762,9 @@ public actor ItoRunner {
     }
 
     /// Lists a page of `listing`.
-    public func getListing(_ listing: Listing, page: Int32) async throws -> MediaPageResult {
+    public func getListing(_ listing: Listing, page: Int32, context: NetworkOperationContext) async throws -> MediaPageResult {
         let contract = self.contract
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             let arguments: [ExportArgument] = [.bytes(try contract.encoder.encode(listing)), .int(page)]
             let result: MediaPageResult
             if contract.abi >= 2 {
@@ -760,13 +789,13 @@ public actor ItoRunner {
 
     /// Searches for `query`, among entries of `kind`, or of every kind the plugin serves when nil.
     /// A kind the plugin doesn't serve finds nothing without calling it.
-    public func search(query: String, page: Int32, kind: MediaKind? = nil, filterValues: [String: ControlValue] = [:])
+    public func search(query: String, page: Int32, kind: MediaKind? = nil, filterValues: [String: ControlValue] = [:], context: NetworkOperationContext)
         async throws -> MediaPageResult {
         let contract = self.contract
         if let kind, !contract.kinds.contains(kind) {
             return MediaPageResult(entries: [], hasNextPage: false)
         }
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             let filters: [FilterItem]
             if contract.abi >= 2, case .available(let capabilities) = try self.capabilities(kind?.wireValue ?? -1) {
                 filters = capabilities.filterItems(values: filterValues)
@@ -798,10 +827,10 @@ public actor ItoRunner {
     }
 
     /// Fills in `entry`'s details and/or its chapters or episodes. The result is the same kind.
-    public func getMediaUpdate(_ entry: MediaEntry, needsDetails: Bool = true, needsUnits: Bool = true)
+    public func getMediaUpdate(_ entry: MediaEntry, needsDetails: Bool = true, needsUnits: Bool = true, context: NetworkOperationContext)
         async throws -> MediaEntry {
         let contract = self.contract
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             let flags: [ExportArgument] = [.flag(needsDetails), .flag(needsUnits)]
             let encoder = contract.encoder
             let updated: MediaEntry
@@ -831,9 +860,9 @@ public actor ItoRunner {
     }
 
     /// The pages of `chapter`, one of `entry`'s, to read as `entry.contentKind(of:)` says.
-    public func getChapterPages(entry: MediaEntry, chapter: Chapter) async throws -> [Page] {
+    public func getChapterPages(entry: MediaEntry, chapter: Chapter, context: NetworkOperationContext) async throws -> [Page] {
         let contract = self.contract
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             let encoder = contract.encoder
             var chapter = chapter
             chapter.kind = entry.contentKind(of: chapter)
@@ -858,9 +887,9 @@ public actor ItoRunner {
     }
 
     /// The streams of `episode`, one of `anime`'s.
-    public func getEpisodeVideos(anime: Anime, episode: Anime.Episode) async throws -> [Anime.Video] {
+    public func getEpisodeVideos(anime: Anime, episode: Anime.Episode, context: NetworkOperationContext) async throws -> [Anime.Video] {
         let contract = self.contract
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             try self.callDecoding(
                 [Anime.Video].self, contract.abi >= 2 ? "get_episode_videos" : "get_video_list",
                 [.bytes(try contract.encoder.encode(anime)), .bytes(try contract.encoder.encode(episode))],
@@ -871,9 +900,9 @@ public actor ItoRunner {
     /// Reports completion of a chapter or episode after local progress has committed. True
     /// acknowledges delivery; false means absent/unsupported. Reported failures throw. Calls may
     /// be retried idempotently.
-    public func markCompleted(kind: MediaKind, mediaKey: String, unitKey: String) async throws -> Bool {
+    public func markCompleted(kind: MediaKind, mediaKey: String, unitKey: String, context: NetworkOperationContext) async throws -> Bool {
         let contract = self.contract
-        return try await performSerialized {
+        return try await performSerialized(context: context) {
             if contract.abi >= 2 {
                 return try self.callCompletion("mark_completed", kind: kind, mediaKey: mediaKey, unitKey: unitKey)
             }

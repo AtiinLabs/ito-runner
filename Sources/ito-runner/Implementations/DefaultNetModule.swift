@@ -9,7 +9,7 @@ public final class DefaultNetModule: NetModule, @unchecked Sendable {
         self.session = session
     }
 
-    public func fetch(request: NetRequest) async throws -> NetResponse {
+    public func fetch(request: NetRequest, context: NetworkOperationContext) async throws -> NetResponse {
         guard let url = URL(string: request.url) else {
             throw ItoError.hostModuleError(domain: "net", message: "Invalid URL: \(request.url)")
         }

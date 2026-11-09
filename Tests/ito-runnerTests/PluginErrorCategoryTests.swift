@@ -94,14 +94,14 @@ struct PluginErrorCategoryTests {
         await #expect(throws: ItoError.pluginFailed(
             function: "get_home", reason: "Add your server URL", category: .needsSetup
         )) {
-            try await runner.getHome()
+            try await runner.getHome(context: .test)
         }
         #expect(try await deallocations(runner) == 1)
     }
 
     @Test func aTypedUnsupportedFromAnOptionalExportMeansNotHandled() async throws {
         let runner = try await loadRunner()
-        #expect(try await runner.handleImage("https://example.com/a.png") == nil)
+        #expect(try await runner.handleImage("https://example.com/a.png", context: .test) == nil)
     }
 
     @Test func withoutATypedFailureThePrintedReasonIsUsed() async throws {
@@ -120,7 +120,7 @@ struct PluginErrorCategoryTests {
         await #expect(throws: ItoError.pluginFailed(
             function: "handle_url", reason: "Sign in!", category: .needsLogin
         )) {
-            try await runner.handleUrl("https://example.com/series/1")
+            try await runner.handleUrl("https://example.com/series/1", context: .test)
         }
     }
 

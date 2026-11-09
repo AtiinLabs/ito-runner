@@ -18,6 +18,17 @@ public enum ItoError: LocalizedError, Equatable {
     /// The specific FFI or Host module threw an error
     case hostModuleError(domain: String, message: String)
 
+    /// Host admission authority, never a guest-reported source error.
+    case networkPolicy(HostNetworkPolicyOutcome)
+
+    /// Synchronous loading cannot replace the memory of an executing export. Use a fresh runner
+    /// for work that overlaps another export.
+    case reloadDuringActiveExport
+
+    /// The call was queued before the plugin was loaded again, so its context and plugin are
+    /// gone. It never ran, and it is not a user cancellation.
+    case pluginReloaded
+
     /// The plugin's export reported a failure. `reason` is the text the plugin gave
     /// (e.g. "Host error: Add your server URL"), or nil when it gave none; `category` is the kind
     /// of failure, when the plugin says (`.other` otherwise).
@@ -41,6 +52,13 @@ public enum ItoError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
+        case .reloadDuringActiveExport:
+            return "Cannot reload a plugin while an export is active."
+        case .pluginReloaded:
+            return "The plugin was reloaded before the call could run."
+        case .networkPolicy:
+            // Intentionally excludes source/account identifiers and grant material. Hosts localize.
+            return "Network access is restricted by host policy."
         case .controlContractViolation(let function, let violation):
             return "\(function): invalid controls contract: \(violation)"
         case .wasmTrap(let reason):
@@ -68,6 +86,9 @@ public enum ItoError: LocalizedError, Equatable {
 
     public static func == (lhs: ItoError, rhs: ItoError) -> Bool {
         switch (lhs, rhs) {
+        case (.reloadDuringActiveExport, .reloadDuringActiveExport): return true
+        case (.pluginReloaded, .pluginReloaded): return true
+        case (.networkPolicy(let l), .networkPolicy(let r)): return l == r
         case (.controlContractViolation(let lf, let lv), .controlContractViolation(let rf, let rv)):
             return lf == rf && lv == rv
         case (.wasmTrap(let l), .wasmTrap(let r)): return l == r

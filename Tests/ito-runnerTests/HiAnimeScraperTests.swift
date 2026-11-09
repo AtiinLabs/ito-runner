@@ -26,7 +26,7 @@ struct HiAnimeListingTests {
     @Test("Home returns non-empty components")
     func testHomeComponents() async throws {
         let runner = try await makeRunner()
-        let home = try await runner.getHome()
+        let home = try await runner.getHome(context: .test)
         #expect(!home.components.isEmpty)
     }
 

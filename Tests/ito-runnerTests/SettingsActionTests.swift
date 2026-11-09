@@ -21,9 +21,9 @@ struct SettingsActionTests {
 
         func invoke(_ runner: ItoRunner) async throws -> Bool {
             switch self {
-            case .actions: return try await runner.getSettingsActions() != nil
-            case .run: return try await runner.runSettingsAction("検査") != nil
-            case .validation: return try await runner.validateSettings() != nil
+            case .actions: return try await runner.getSettingsActions(context: .test) != nil
+            case .run: return try await runner.runSettingsAction("検査", context: .test) != nil
+            case .validation: return try await runner.validateSettings(context: .test) != nil
             }
         }
     }
@@ -65,18 +65,18 @@ struct SettingsActionTests {
     @Test func missingExportsLeaveLegacyPluginsUsable() async throws {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: wat2wasm("(module (memory (export \"memory\") 1))"))
-        #expect(try await runner.getSettingsActions() == nil)
-        #expect(try await runner.runSettingsAction("probe") == nil)
-        #expect(try await runner.validateSettings() == nil)
+        #expect(try await runner.getSettingsActions(context: .test) == nil)
+        #expect(try await runner.runSettingsAction("probe", context: .test) == nil)
+        #expect(try await runner.validateSettings(context: .test) == nil)
     }
 
     @Test func payloadsDecodeTheSDKWireFormat() async throws {
         let runner = ItoRunner()
         // Independent Rust postcard fixtures, not bytes encoded from the Swift models under test.
         try await runner.loadPlugin(fromBytes: module(.actions, payload: Array("\u{01}\u{05}probe\u{04}Test\u{01}\u{02}Hi".utf8)))
-        #expect(try await runner.getSettingsActions() == [SettingsAction(id: "probe", title: "Test", summary: "Hi")])
+        #expect(try await runner.getSettingsActions(context: .test) == [SettingsAction(id: "probe", title: "Test", summary: "Hi")])
         try await runner.loadPlugin(fromBytes: module(.validation, payload: Array("\u{02}\u{03}url\u{07}Missing\u{00}\u{05}Setup".utf8)))
-        #expect(try await runner.validateSettings() == [
+        #expect(try await runner.validateSettings(context: .test) == [
             SettingIssue(key: "url", message: "Missing"), SettingIssue(key: "", message: "Setup")
         ])
     }
@@ -90,7 +90,7 @@ struct SettingsActionTests {
             i64.const \((UInt64(64) << 32) | 7)
             """
         try await runner.loadPlugin(fromBytes: module(.run, payload: [6] + Array("成功".utf8), body: body))
-        #expect(try await runner.runSettingsAction("検査") == "成功")
+        #expect(try await runner.runSettingsAction("検査", context: .test) == "成功")
         #expect(try await runner.executeExport("free_count") == [.i32(2)])
     }
 
@@ -101,7 +101,7 @@ struct SettingsActionTests {
             local.get $id if unreachable end
             i64.const \((UInt64(64) << 32) | 1)
             """))
-        #expect(try await runner.runSettingsAction("")?.isEmpty == true)
+        #expect(try await runner.runSettingsAction("", context: .test)?.isEmpty == true)
         #expect(try await runner.executeExport("free_count") == [.i32(1)])
     }
 
@@ -110,8 +110,8 @@ struct SettingsActionTests {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: module(operation))
         switch operation {
-        case .actions: #expect(try await runner.getSettingsActions()?.isEmpty == true)
-        case .validation: #expect(try await runner.validateSettings()?.isEmpty == true)
+        case .actions: #expect(try await runner.getSettingsActions(context: .test)?.isEmpty == true)
+        case .validation: #expect(try await runner.validateSettings(context: .test)?.isEmpty == true)
         case .run: Issue.record("Not an array operation")
         }
         #expect(try await runner.executeExport("free_count") == [.i32(1)])
@@ -146,7 +146,7 @@ struct SettingsActionTests {
     @Test func trappingActionStillFreesItsInput() async throws {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: module(.run, body: "unreachable"))
-        await #expect(throws: ItoError.self) { try await runner.runSettingsAction("検査") }
+        await #expect(throws: ItoError.self) { try await runner.runSettingsAction("検査", context: .test) }
         #expect(try await runner.executeExport("free_count") == [.i32(1)])
     }
 }

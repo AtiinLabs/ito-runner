@@ -14,12 +14,12 @@ public class WasmBridge {
     private let postcardDecoder = ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion)
 
     // Dependencies
-    public var netModule: NetModule?
-    public var htmlModule: HtmlModule?
-    public var stdModule: StdModule?
-    public var defaultsModule: DefaultsModule?
-    public var envModule: EnvModule?
-    public var webviewModule: WebviewModule?
+    var netModule: NetModule?
+    var htmlModule: HtmlModule?
+    var stdModule: StdModule?
+    var defaultsModule: DefaultsModule?
+    var envModule: EnvModule?
+    var webviewModule: WebviewModule?
 
     private var pendingNetResponseBytes: [UInt8]?
     private var pendingWebviewResponseBytes: [UInt8]?
@@ -31,12 +31,27 @@ public class WasmBridge {
     /// How long host work may block a plugin call.
     var timeouts = HostCallTimeouts()
 
+    /// Queue-confined per-export buffers must not survive a cancellation, trap or account switch.
+    func clearOperationState() {
+        pendingNetResponseBytes = nil
+        pendingWebviewResponseBytes = nil
+        currentExport = nil
+        reportedFailure = nil
+    }
+
+    /// True when no per-export buffer or failure tracking is left from an earlier call.
+    var operationStateIsClear: Bool {
+        pendingNetResponseBytes == nil && pendingWebviewResponseBytes == nil
+            && currentExport == nil && reportedFailure == nil
+    }
+
     public init(runner: ItoRunner) {
         self.runner = runner
     }
 
-    /// Reads and decodes a Postcard struct from Wasm memory
-    public func readRequest<T: Decodable>(_ type: T.Type, requestPtr: Int32, requestLen: Int32)
+    /// Reads and decodes a Postcard struct from Wasm memory. Internal: guest memory is only
+    /// touched from the serialized lane, never by hosts directly.
+    func readRequest<T: Decodable>(_ type: T.Type, requestPtr: Int32, requestLen: Int32)
         async throws -> T {
         guard let runner else { throw ItoError.wasmTrap("Runner is no longer available") }
         let bytes = try await runner.readMemory(offset: Int(requestPtr), length: Int(requestLen))
@@ -45,7 +60,7 @@ public class WasmBridge {
 
     /// Encodes a Swift struct to Postcard and writes it to Wasm memory.
     /// Returns the packed (pointer << 32 | length) response.
-    public func writeResponse<T: Encodable>(_ response: T) async throws -> Int64 {
+    func writeResponse<T: Encodable>(_ response: T) async throws -> Int64 {
         guard let runner else { throw ItoError.wasmTrap("Runner is no longer available") }
         let bytes = try postcardEncoder.encode(response)
 
@@ -115,34 +130,86 @@ public class WasmBridge {
     /// cancelled call or a request past the watchdog deadline reaches the plugin as a 500
     /// response it handles like any server error, so its export finishes normally.
     func fetchForPlugin(_ request: NetRequest, label: String) -> NetResponse {
+        guard let token = activeCallToken else {
+            return Self.transportFailure(Self.missingContextText, label: label, includeBody: false)
+        }
+        if token.isCancelled || token.policyOutcome != nil {
+            return Self.transportFailure(Self.admissionRefusedText, label: label, includeBody: false)
+        }
+        let context = token.context
         let module = netModule
-        let outcome = waitForHostWork(timeout: timeouts.net) { () async throws -> NetResponse in
+        let outcome = waitForHostWork(token: token, timeout: timeouts.net) { () async throws -> NetResponse in
             guard let module else {
                 throw ItoError.hostModuleError(domain: "net", message: "NetModule not provided")
             }
-            return try await module.fetch(request: request)
+            return try await module.fetch(request: request, context: context)
         }
         let failure: String
         switch outcome {
         case .completed(let response):
             return Self.withoutTransportErrorHeader(response)
         case .failed(let error):
-            failure = error.localizedDescription
+            if let policy = Self.policyOutcome(error) {
+                token.recordPolicyOutcome(policy)
+                failure = Self.admissionRefusedText
+            } else {
+                failure = Self.guestFailureText(for: error)
+            }
         case .cancelled:
-            failure = "The request was cancelled."
+            failure = Self.cancelledText
         case .timedOut:
-            failure = "The request timed out."
+            failure = Self.timedOutText
         }
+        return Self.transportFailure(failure, label: label, includeBody: true)
+    }
+
+    // Everything below reaches guest memory. Fixed ASCII English only: never localized, never
+    // derived from host error text, which can carry URLs, tokens or cookies.
+    static let missingContextText = "Missing host context"
+    static let admissionRefusedText = "Host admission refused"
+    static let genericFailureText = "Host network request failed."
+    static let cancelledText = "The request was cancelled."
+    static let timedOutText = "The request timed out."
+
+    /// Specific guest texts for the `URLError` codes a plugin can usefully distinguish.
+    static let urlErrorTexts: [URLError.Code: String] = [
+        .notConnectedToInternet: "No network connection.",
+        .cannotFindHost: "Cannot find the host.",
+        .dnsLookupFailed: "Cannot find the host.",
+        .cannotConnectToHost: "Cannot connect to the host.",
+        .secureConnectionFailed: "Secure connection failed.",
+        .serverCertificateUntrusted: "Secure connection failed.",
+        .serverCertificateHasBadDate: "Secure connection failed.",
+        .serverCertificateHasUnknownRoot: "Secure connection failed.",
+        .serverCertificateNotYetValid: "Secure connection failed.",
+        .timedOut: timedOutText,
+        .cancelled: cancelledText
+    ]
+
+    /// The guest text for a host failure: a fixed text for an allowlisted `URLError`, otherwise the
+    /// generic one.
+    static func guestFailureText(for error: any Error) -> String {
+        guard let code = (error as? URLError)?.code else { return genericFailureText }
+        return urlErrorTexts[code] ?? genericFailureText
+    }
+
+    private static func transportFailure(_ failure: String, label: String, includeBody: Bool) -> NetResponse {
         // Plugins from before the header see the same 500 as always; newer SDKs read the header
         // to tell "couldn't reach the server" from a server error.
-        return NetResponse(
+        NetResponse(
             status: 500,
             headers: [
                 "Content-Type": "text/plain",
-                Self.transportErrorHeader: failure.components(separatedBy: .newlines).joined(separator: " ")
+                transportErrorHeader: failure
             ],
-            body: Array("FFI Error in \(label): \(failure)".utf8)
+            body: includeBody ? Array("FFI Error in \(label): \(failure)".utf8) : []
         )
+    }
+
+    private static func policyOutcome(_ error: any Error) -> HostNetworkPolicyOutcome? {
+        if let outcome = error as? HostNetworkPolicyOutcome { return outcome }
+        if let error = error as? ItoError, case .networkPolicy(let outcome) = error { return outcome }
+        return nil
     }
 
     /// The header a host's 500 response carries when the request never reached the server
@@ -166,24 +233,33 @@ public class WasmBridge {
     /// evaluates to nothing. SDK versions before 0.2.1 treat zero as no result too.
     static let noWebviewResult = UInt32(bitPattern: -1)
 
-    /// Runs a web view operation and waits for it. Returns nil when the call was cancelled: the
-    /// plugin then gets `noWebviewResult` it handles as an error and unwinds normally, where a
-    /// thrown error would abort it mid-call. Throws on failure or timeout.
+    /// Runs a web view operation and waits for it. Returns nil when the call was cancelled or the
+    /// host refused it by policy: the plugin then gets `noWebviewResult` it handles as an error and
+    /// unwinds normally, where a thrown error would abort it mid-call. The outer caller still
+    /// receives the recorded policy outcome. Throws on failure or timeout.
     func webviewForPlugin<Value: Sendable>(
-        _ work: @escaping @Sendable (any WebviewModule) async throws -> Value
+        _ work: @escaping @Sendable (any WebviewModule, NetworkOperationContext) async throws -> Value
     ) throws -> Value? {
+        guard let token = activeCallToken else {
+            throw ItoError.hostModuleError(domain: "webview", message: Self.missingContextText)
+        }
+        if token.isCancelled || token.policyOutcome != nil { return nil }
+        let context = token.context
         let module = webviewModule
-        let outcome = waitForHostWork(timeout: timeouts.webview) { () async throws -> Value in
+        let outcome = waitForHostWork(token: token, timeout: timeouts.webview) { () async throws -> Value in
             guard let module else {
                 throw ItoError.hostModuleError(domain: "webview", message: "WebviewModule not provided")
             }
-            return try await work(module)
+            return try await work(module, context)
         }
         switch outcome {
         case .completed(let value):
             return value
         case .failed(let error):
-            RunnerLogger.bridge.error("WasmBridge: webview call failed: \(error.localizedDescription)")
+            if let policy = Self.policyOutcome(error) {
+                token.recordPolicyOutcome(policy)
+                return nil
+            }
             throw Self.webviewError(error)
         case .cancelled:
             return nil
@@ -195,7 +271,7 @@ public class WasmBridge {
     // MARK: - Imports Registration
 
     /// The host functions a plugin can import.
-    public func buildImports(store: Store) -> Imports {
+    func buildImports(store: Store) -> Imports {
         Self.imports(from: buildImportTable(store: store))
     }
 
@@ -697,8 +773,8 @@ public class WasmBridge {
                 throw ItoError.wasmTrap("Failed to decode WebviewRequest: \(error)")
             }
 
-            guard let response = try self.webviewForPlugin({ module in
-                try await module.loadUrl(request: request)
+            guard let response = try self.webviewForPlugin({ module, context in
+                try await module.loadUrl(request: request, context: context)
             }) else { return [.i32(Self.noWebviewResult)] }
             let responseBytes = try self.postcardEncoder.encode(response)
             self.pendingWebviewResponseBytes = responseBytes
@@ -719,8 +795,8 @@ public class WasmBridge {
                 offset: UInt(requestPtr), count: Int(requestLen)
             ) { buffer in String(decoding: buffer, as: UTF8.self) }
 
-            guard let result = try self.webviewForPlugin({ module in
-                try await module.executeJs(script: scriptString)
+            guard let result = try self.webviewForPlugin({ module, context in
+                try await module.executeJs(script: scriptString, context: context)
             }) else { return [.i32(Self.noWebviewResult)] }
             let responseBytes = Array(result.utf8)
             self.pendingWebviewResponseBytes = responseBytes

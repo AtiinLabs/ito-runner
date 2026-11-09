@@ -32,8 +32,8 @@ struct PluginImageRequestTests {
 
     @Test func olderPluginsLeaveNativeResolutionUnsupported() async throws {
         let runner = try await runner(exports: "")
-        #expect(try await runner.getImageRequest("api/v1/cover") == nil)
-        #expect(try await runner.getImageOrigins() == nil)
+        #expect(try await runner.getImageRequest("api/v1/cover", context: .test) == nil)
+        #expect(try await runner.getImageOrigins(context: .test) == nil)
     }
 
     @Test func configuredRequestsDecodeAndBothArgumentAndResultBuffersAreFreed() async throws {
@@ -43,8 +43,8 @@ struct PluginImageRequestTests {
             (func (export "get_image_origins") (result i64)
               i64.const \((UInt64(128) << 32) | 10))
             """)
-        #expect(try await runner.getImageRequest("api/v1/cover") == PluginImageRequest(url: "http://x/p", headers: ["K": "V"]))
-        #expect(try await runner.getImageOrigins() == ["http://x"])
+        #expect(try await runner.getImageRequest("api/v1/cover", context: .test) == PluginImageRequest(url: "http://x/p", headers: ["K": "V"]))
+        #expect(try await runner.getImageOrigins(context: .test) == ["http://x"])
         #expect(try await runner.executeExport("dealloc_count") == [.i32(3)])
     }
 
@@ -54,7 +54,7 @@ struct PluginImageRequestTests {
               i32.const 256 i32.const 41 call $print i64.const 0)
             """)
         await #expect(throws: ItoError.pluginFailed(function: "get_image_request", reason: "Refused image")) {
-            try await runner.getImageRequest("api/v1/refused")
+            try await runner.getImageRequest("api/v1/refused", context: .test)
         }
         #expect(try await runner.executeExport("dealloc_count") == [.i32(1)])
     }
@@ -65,8 +65,8 @@ struct PluginImageRequestTests {
               i32.const 320 i32.const 49 call $print i64.const 0)
             (func (export "get_image_origins") (result i64) i64.const 0)
             """)
-        #expect(try await runner.getImageRequest("transformed") == nil)
-        #expect(try await runner.getImageOrigins() == nil)
+        #expect(try await runner.getImageRequest("transformed", context: .test) == nil)
+        #expect(try await runner.getImageOrigins(context: .test) == nil)
     }
 
     @Test func requestsWithoutHeadersAndWithEmptyHeadersRemainDistinct() throws {
