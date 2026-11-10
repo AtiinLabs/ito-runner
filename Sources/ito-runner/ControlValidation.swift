@@ -262,22 +262,22 @@ enum ControlValidation {
 /// Decodes with prefix limits before allocating elements, then checks cross-field constraints.
 enum ControlsDecoder {
     static func settingsForm(_ bytes: [UInt8]) throws -> SettingsForm {
-        let form = try ItoPostcardDecoder().decodeControls(SettingsForm.self, from: bytes)
+        let form = try ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion).decodeControls(SettingsForm.self, from: bytes)
         try ControlValidation.document(sections: form.sections)
         return form
     }
     static func searchCapabilities(_ bytes: [UInt8]) throws -> SearchCapabilities {
-        let c = try ItoPostcardDecoder().decodeControls(SearchCapabilities.self, from: bytes)
+        let c = try ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion).decodeControls(SearchCapabilities.self, from: bytes)
         try ControlValidation.document(sections: c.sections, sort: c.sort, search: true)
         return c
     }
     static func optionPage(_ bytes: [UInt8], request: OptionRequest) throws -> OptionPage {
-        let page = try ItoPostcardDecoder().decodeControls(OptionPage.self, from: bytes, pageLimit: Int(request.limit))
+        let page = try ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion).decodeControls(OptionPage.self, from: bytes, pageLimit: Int(request.limit))
         try ControlValidation.page(page, request: request)
         return page
     }
     static func suggestions(_ bytes: [UInt8]) throws -> [SearchSuggestion] {
-        let s = try ItoPostcardDecoder().decodeControls([SearchSuggestion].self, from: bytes)
+        let s = try ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion).decodeControls([SearchSuggestion].self, from: bytes)
         try ControlValidation.suggestions(s)
         return s
     }

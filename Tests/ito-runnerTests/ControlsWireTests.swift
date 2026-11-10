@@ -77,13 +77,13 @@ struct ControlsWireTests {
             "year": .integerRange(lower: 2101, upper: nil), "tags": .multiSelect(["t9"])
         ]
         let items = capabilities.filterItems(values: values)
-        #expect(try ItoPostcardEncoder().encode(items) == filterWire.bytes)
+        #expect(try ItoPostcardEncoder(abiVersion: 2).encode(items) == filterWire.bytes)
         #expect(items.map(\.name) == ["sort", "adult", "year", "genres", "tags"])
     }
 
     private func roundTrip<T: Codable>(_ type: T.Type, _ bytes: [UInt8]) throws -> T {
-        let value = try ItoPostcardDecoder().decode(type, from: bytes)
-        #expect(try ItoPostcardEncoder().encode(value) == bytes)
+        let value = try ItoPostcardDecoder(abiVersion: 2).decode(type, from: bytes)
+        #expect(try ItoPostcardEncoder(abiVersion: 2).encode(value) == bytes)
         return value
     }
     @Test func everySharedWireFixture() throws {
@@ -95,7 +95,7 @@ struct ControlsWireTests {
                 switch fixture.type {
                 case "SettingsForm":
                     let form = try ControlsDecoder.settingsForm(fixture.bytes)
-                    #expect(try ItoPostcardEncoder().encode(form) == fixture.bytes, Comment(rawValue: fixture.name))
+                    #expect(try ItoPostcardEncoder(abiVersion: 2).encode(form) == fixture.bytes, Comment(rawValue: fixture.name))
                     if fixture.name == "settings_form.one_toggle" {
                         #expect(form.sections == [ControlSection(id: "content", title: "Content", controls: [Control(id: "adult", title: "Adult", kind: .toggle(ToggleControl(defaultValue: false)))])])
                     }
@@ -117,16 +117,16 @@ struct ControlsWireTests {
                         else { Issue.record("Expected text control") }
                     }
                 case "Control":
-                    let control = try ItoPostcardDecoder().decode(Control.self, from: fixture.bytes)
+                    let control = try ItoPostcardDecoder(abiVersion: 2).decode(Control.self, from: fixture.bytes)
                     if fixture.expect.hasPrefix("unsupported:") {
                         let tag = UInt32(fixture.expect.split(separator: ":")[1])!
                         #expect(control.kind == .unsupported(tag: tag))
-                        #expect(throws: ItoError.self) { try ItoPostcardEncoder().encode(control) }
+                        #expect(throws: ItoError.self) { try ItoPostcardEncoder(abiVersion: 2).encode(control) }
                         continue
                     }
                     var count = 0
                     try ControlValidation.control(control, search: false, optionsTotal: &count)
-                    #expect(try ItoPostcardEncoder().encode(control) == fixture.bytes)
+                    #expect(try ItoPostcardEncoder(abiVersion: 2).encode(control) == fixture.bytes)
                     if fixture.name == "control.integer" {
                         #expect(control == Control(id: "year", title: "Year", kind: .integer(IntegerControl(min: 1900, max: 2100))))
                     }
@@ -137,7 +137,7 @@ struct ControlsWireTests {
                     }
                 case "SearchCapabilities":
                     let capabilities = try ControlsDecoder.searchCapabilities(fixture.bytes)
-                    #expect(try ItoPostcardEncoder().encode(capabilities) == fixture.bytes)
+                    #expect(try ItoPostcardEncoder(abiVersion: 2).encode(capabilities) == fixture.bytes)
                     if fixture.name == "search_capabilities.sort_only" {
                         #expect(capabilities.flags.rawValue == 5)
                         #expect(capabilities.sort?.id == "sort")
@@ -158,15 +158,15 @@ struct ControlsWireTests {
                     }
                 case "OptionPage":
                     let requestWire = try #require(fixtures.wire.first { $0.name == fixture.request })
-                    let request = try ItoPostcardDecoder().decode(OptionRequest.self, from: requestWire.bytes)
+                    let request = try ItoPostcardDecoder(abiVersion: 2).decode(OptionRequest.self, from: requestWire.bytes)
                     let page = try ControlsDecoder.optionPage(fixture.bytes, request: request)
-                    #expect(try ItoPostcardEncoder().encode(page) == fixture.bytes)
+                    #expect(try ItoPostcardEncoder(abiVersion: 2).encode(page) == fixture.bytes)
                     if fixture.name == "option_page.first" {
                         #expect(page == OptionPage(options: [ChoiceOption(value: "t1", label: "Romance", group: "Themes")], nextOffset: 51, total: 6141))
                     }
                 case "Suggestions":
                     let suggestions = try ControlsDecoder.suggestions(fixture.bytes)
-                    #expect(try ItoPostcardEncoder().encode(suggestions) == fixture.bytes)
+                    #expect(try ItoPostcardEncoder(abiVersion: 2).encode(suggestions) == fixture.bytes)
                     if fixture.name == "suggestions.one" { #expect(suggestions == [SearchSuggestion(query: "Frieren")]) }
                 case "Filters":
                     let filters = try roundTrip([FilterItem].self, fixture.bytes)
@@ -209,13 +209,13 @@ struct ControlsWireTests {
     @Test func unknownKindKeepsSiblingControlsAndUnknownFlags() throws {
         let future: [UInt8] = [6] + Array("future".utf8) + [6] + Array("Future".utf8) + [0, 0, 0, 99, 2, 0xaa, 0xbb]
         let toggle = Control(id: "adult", title: "Adult", kind: .toggle(ToggleControl(defaultValue: false)))
-        let second = try ItoPostcardEncoder().encode(toggle)
+        let second = try ItoPostcardEncoder(abiVersion: 2).encode(toggle)
         let prefix: [UInt8] = [1, 1, 115, 1, 83, 0, 0, 2]
         let form = try ControlsDecoder.settingsForm(prefix + future + second)
         #expect(form.controls.map(\.id) == ["future", "adult"])
         #expect(form.controls.first?.kind == .unsupported(tag: 99))
         let flagged = SettingsForm(sections: [ControlSection(id: "s", title: "S", flags: .init(rawValue: 0x80000001), controls: [toggle])])
-        let restored = try ControlsDecoder.settingsForm(ItoPostcardEncoder().encode(flagged))
+        let restored = try ControlsDecoder.settingsForm(ItoPostcardEncoder(abiVersion: 2).encode(flagged))
         #expect(restored.sections[0].flags.rawValue == 0x80000001)
         #expect(restored.sections[0].flags.contains(.page))
     }
@@ -224,16 +224,16 @@ struct ControlsWireTests {
         // Header only; the deliberately absent oversized body must not be copied or decoded.
         let header: [UInt8] = [1, 120, 1, 88, 0, 0, 0]
         #expect(throws: ControlContractViolation(.lengthBody)) {
-            try ItoPostcardDecoder().decode(Control.self, from: header + [99, 0x81, 0x80, 0x04])
+            try ItoPostcardDecoder(abiVersion: 2).decode(Control.self, from: header + [99, 0x81, 0x80, 0x04])
         }
-        let body = try ItoPostcardEncoder().encode([UInt8](repeating: 0, count: ControlLimits.bodyBytes))
-        let future = try ItoPostcardDecoder().decode(Control.self, from: header + [99] + body)
+        let body = try ItoPostcardEncoder(abiVersion: 2).encode([UInt8](repeating: 0, count: ControlLimits.bodyBytes))
+        let future = try ItoPostcardDecoder(abiVersion: 2).decode(Control.self, from: header + [99] + body)
         #expect(future.kind == .unsupported(tag: 99))
         #expect(throws: ControlContractViolation(.controlBody, id: "x")) {
-            try ItoPostcardDecoder().decode(Control.self, from: header + [0, 2, 0, 0])
+            try ItoPostcardDecoder(abiVersion: 2).decode(Control.self, from: header + [0, 2, 0, 0])
         }
         #expect(throws: ControlContractViolation(.controlBody, id: "x")) {
-            try ItoPostcardDecoder().decode(Control.self, from: header + [0, 0])
+            try ItoPostcardDecoder(abiVersion: 2).decode(Control.self, from: header + [0, 0])
         }
     }
 }

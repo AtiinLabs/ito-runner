@@ -60,7 +60,7 @@ final class RunnerLifetimeTests: XCTestCase {
         let bytes = memory.withUnsafeMutableBufferPointer(
             offset: UInt(packed >> 32), count: Int(packed & 0xffff_ffff)
         ) { Array($0) }
-        let value = try ItoPostcardDecoder().decode(String?.self, from: bytes)
+        let value = try ItoPostcardDecoder(abiVersion: 2).decode(String?.self, from: bytes)
         XCTAssertEqual(value, "memory-only")
     }
 }

@@ -130,7 +130,7 @@ struct PluginErrorCategoryTests {
             .needsSetup, .unauthorized, .network, .server, .notFound, .other, .unsupported, .needsLogin
         ]
         for (index, category) in categories.enumerated() {
-            let payload = try ItoPostcardDecoder().decode(PluginErrorPayload.self, from: [UInt8(index * 2), 1, 0x78])
+            let payload = try ItoPostcardDecoder(abiVersion: 2).decode(PluginErrorPayload.self, from: [UInt8(index * 2), 1, 0x78])
             #expect(payload.category == category)
             #expect(payload.message == "x")
         }

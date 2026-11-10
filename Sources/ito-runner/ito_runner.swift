@@ -1,7 +1,6 @@
 import OSLog
 import Foundation
 import WasmKit
-import ZIPFoundation
 
 /// The main execution engine for ito-runner.
 /// It wraps WasmKit to load, instantiate, and execute WebAssembly plugins.
@@ -20,7 +19,7 @@ public actor ItoRunner {
     public private(set) var supportedKinds: [MediaKind] = []
 
     /// Decodes payloads laid out the same in every ABI (settings, errors, image requests).
-    private let postcardDecoder = ItoPostcardDecoder()
+    private let postcardDecoder = ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion)
 
     private enum CapabilitiesEntry {
         case available(SearchCapabilities), absent, failed(ItoError)
@@ -123,17 +122,34 @@ public actor ItoRunner {
     }
 
     /// Loads a plugin directly from a WebAssembly byte array. A plugin that imports host functions
-    /// this runner lacks, or was built for an unsupported ABI, is refused before it can run.
+    /// this runner lacks, has a start section, or was built for an unsupported ABI is refused
+    /// before anything of it is instantiated, so none of its code runs.
     public func loadPlugin(fromBytes wasmBytes: [UInt8]) throws {
         do {
-            // 1. Initialize a new Wasm Engine & Store
+            // 1. Read what the module declares without instantiating it.
+            let binary = try Self.inspectBinary(wasmBytes)
+            guard !binary.hasStartSection else {
+                throw ItoError.wasmTrap("The plugin has a start section; modules must do their work only in exports.")
+            }
+            guard Self.supportedABIVersions.contains(binary.abiVersion) else {
+                throw ItoError.unsupportedABI(version: binary.abiVersion, supported: Self.supportedABIVersions)
+            }
+            // The same verdict `compatibility(of:)` gives: without a constant naming known kinds,
+            // calling the export after instantiation would run plugin code.
+            guard binary.abiVersion < 2 || binary.kinds != nil else {
+                throw ItoError.wasmTrap(
+                    "ito_supported_kinds must be a defined () -> i32 returning a constant that names kinds this host knows."
+                )
+            }
+
+            // 2. Initialize a new Wasm Engine & Store
             let engine = Engine()
             let store = Store(engine: engine)
 
-            // 2. Parse the Wasm Module
+            // 3. Parse the Wasm Module
             let module = try parseWasm(bytes: wasmBytes)
 
-            // 3. Setup Imports
+            // 4. Setup Imports
             let bridge = WasmBridge(runner: self)
             bridge.netModule = self.netModule
             bridge.htmlModule = self.htmlModule
@@ -157,18 +173,24 @@ public actor ItoRunner {
             }
             let imports = WasmBridge.imports(from: importTable)
 
-            // 4. Instantiate the plugin, and keep it only if its ABI is supported and it exports
-            // its memory. Nothing of a previously loaded plugin is touched until then.
+            // 5. Instantiate the plugin, and keep it only if its exports report what the static
+            // read found and it exports its memory. Nothing of a previously loaded plugin is
+            // touched until then. The equality checks below guard the static reader's mapping of
+            // function indices to code bodies: a reader that attributed a constant to the wrong
+            // function would disagree with the instance here instead of passing the ABI gate.
             let instance = try module.instantiate(store: store, imports: imports)
             let abi = try Self.abiVersion(of: instance)
-            guard Self.supportedABIVersions.contains(abi) else {
-                throw ItoError.unsupportedABI(version: abi, supported: Self.supportedABIVersions)
+            guard abi == binary.abiVersion else {
+                throw ItoError.wasmTrap("ito_abi_version returned \(abi), not the constant it was read as (\(binary.abiVersion)).")
             }
             guard case .memory(let memory)? = instance.exports["memory"] else {
                 throw ItoError.wasmTrap("Plugin did not export linear 'memory'.")
             }
             let errorProtocolVersion = try Self.errorReportVersion(of: instance)
             let kinds = try Self.supportedKinds(of: instance, abi: abi)
+            if abi >= 2, binary.kinds != kinds {
+                throw ItoError.wasmTrap("ito_supported_kinds returned other kinds than the constant it was read as.")
+            }
 
             // Clear any lingering state from previous runs
             bridge.htmlModule?.clear()
@@ -238,69 +260,22 @@ public actor ItoRunner {
         return version
     }
 
-    /// Loads a packaged `.ito` bundle, extracting the wasm logic and returning the manifest.
+    /// Loads a packaged `.ito` bundle, extracting the wasm logic and returning the manifest, which
+    /// is nil when the bundle has none. Throws when the module can't be read, as loading needs it.
     public func loadBundle(from url: URL) throws -> PluginManifest? {
-        guard let archive = Archive(url: url, accessMode: .read) else {
-            throw ItoError.wasmTrap("Failed to read .ito archive at \(url)")
-        }
-
-        var manifest: PluginManifest?
-        var wasmBytes: [UInt8]?
-
-        for entry in archive {
-            if entry.path.hasSuffix(".json") {
-                var data = Data()
-                _ = try archive.extract(entry) { dict in
-                    data.append(dict)
-                }
-                manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
-            } else if entry.path.hasSuffix(".wasm") {
-                var data = Data()
-                _ = try archive.extract(entry) { dict in
-                    data.append(dict)
-                }
-                wasmBytes = [UInt8](data)
-            }
-        }
-
-        guard let wasm = wasmBytes else {
-            throw ItoError.wasmTrap("Archive did not contain a .wasm file.")
-        }
-
-        try loadPlugin(fromBytes: wasm)
+        let bundle = try PluginBundle(at: url)
+        let manifest = try bundle.manifest()
+        try loadPlugin(fromBytes: try bundle.wasm())
         return manifest
     }
 
     /// Statically extracts the manifest and optional icon from an `.ito` bundle without loading the Wasm module.
     public static func extractPluginInfo(from url: URL) throws -> (manifest: PluginManifest, icon: Data?) {
-        guard let archive = Archive(url: url, accessMode: .read) else {
-            throw ItoError.wasmTrap("Failed to read .ito archive at \(url)")
-        }
-
-        var manifest: PluginManifest?
-        var iconData: Data?
-
-        for entry in archive {
-            if entry.path.hasSuffix(".json") {
-                var data = Data()
-                _ = try archive.extract(entry) { dict in
-                    data.append(dict)
-                }
-                manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
-            } else if entry.path.lowercased().hasSuffix("icon.png") || entry.path.lowercased().hasSuffix("icon.jpg") {
-                var data = Data()
-                _ = try archive.extract(entry) { dict in
-                    data.append(dict)
-                }
-                iconData = data
-            }
-        }
-
-        guard let finalManifest = manifest else {
+        let bundle = try PluginBundle(at: url)
+        guard let manifest = try bundle.manifest() else {
             throw ItoError.wasmTrap("Archive did not contain a manifest file.")
         }
-
-        return (finalManifest, iconData)
+        return (manifest, bundle.icon())
     }
 
     // MARK: - Memory Utilities
@@ -559,7 +534,7 @@ public actor ItoRunner {
     public func getOptionPage(_ request: OptionRequest) async throws -> OptionPage? {
         try decodeControls("get_option_page") { try ControlValidation.request(request) }
         return try await performSerialized {
-            guard let bytes = try self.callBounded("get_option_page", [.bytes(try ItoPostcardEncoder().encode(request))],
+            guard let bytes = try self.callBounded("get_option_page", [.bytes(try ItoPostcardEncoder(abiVersion: sharedLayoutABIVersion).encode(request))],
                 parameters: [.i32, .i32], maxBytes: ControlLimits.optionPageBytes) else { return nil }
             return try self.decodeControls("get_option_page") { try ControlsDecoder.optionPage(bytes, request: request) }
         }

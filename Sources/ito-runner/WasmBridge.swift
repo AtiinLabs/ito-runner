@@ -10,8 +10,8 @@ public class WasmBridge {
 
     private weak var runner: ItoRunner?
     /// Host-module payloads have the same layout in every ABI.
-    private let postcardEncoder = ItoPostcardEncoder()
-    private let postcardDecoder = ItoPostcardDecoder()
+    private let postcardEncoder = ItoPostcardEncoder(abiVersion: sharedLayoutABIVersion)
+    private let postcardDecoder = ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion)
 
     // Dependencies
     public var netModule: NetModule?

@@ -35,7 +35,7 @@ struct SettingsActionTests {
         let encoded = payload.map { String(format: "\\%02x", $0) }.joined()
         var failureExports = ""
         if let failure {
-            let report = try ItoPostcardEncoder().encode(
+            let report = try ItoPostcardEncoder(abiVersion: 2).encode(
                 PluginErrorPayload(category: failure, message: "Unsupported operation")
             )
             let data = report.map { String(format: "\\%02x", $0) }.joined()

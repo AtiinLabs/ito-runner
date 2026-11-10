@@ -88,7 +88,7 @@ struct HostModuleNetTests {
             headers: [:],
             body: nil
         )
-        let requestBytes = try ItoPostcardEncoder().encode(request)
+        let requestBytes = try ItoPostcardEncoder(abiVersion: 2).encode(request)
 
         // 4. Manually write the request into the Wasm memory at offset 0
         guard let memoryExport = instance.exports["memory"],
@@ -130,7 +130,7 @@ struct HostModuleNetTests {
             Array(UnsafeRawBufferPointer(buffer))
         }
 
-        let response = try ItoPostcardDecoder().decode(NetResponse.self, from: responseBytes)
+        let response = try ItoPostcardDecoder(abiVersion: 2).decode(NetResponse.self, from: responseBytes)
 
         #expect(response.status == 200)
         #expect(response.headers["Content-Type"] == "application/json")

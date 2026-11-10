@@ -7,7 +7,7 @@ public struct ItoPostcardEncoder: Sendable {
     /// The plugin ABI whose layouts to write (`ItoRunner.supportedABIVersions`).
     public let abiVersion: Int
 
-    public init(abiVersion: Int = ItoRunner.supportedABIVersions.upperBound) {
+    public init(abiVersion: Int) {
         self.abiVersion = abiVersion
     }
 
