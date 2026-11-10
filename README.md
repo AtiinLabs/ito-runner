@@ -79,9 +79,10 @@ it doesn't serve finds nothing without calling it), `getMediaUpdate(_:needsDetai
 `getChapterPages(entry:chapter:context:)`, `getEpisodeVideos(anime:episode:context:)`. Entries are `MediaEntry` values; an update returns the same kind.
 
 Each chapter's `ContentKind` says how it is read: `images` in a page reader, `text` in a
-text reader that shows image pages inline. Chapters from plugins built for ABI 1, or stored
-before kinds existed, have no kind; `MediaEntry.contentKind(of:)` reads them as their entry's
-kind says (manga as images, novels as text). The runner runs ABI 1 and ABI 2 plugins.
+text reader that shows image pages inline. Chapters stored before kinds existed have no kind;
+`MediaEntry.contentKind(of:)` reads them as their entry's kind says (manga as images, novels as
+text). The runner runs ABI 3 plugins only (`ItoRunner.supportedABIVersions`); a plugin with another
+ABI, or without `ito_error_version` 2 or later, is refused before anything of it is instantiated.
 
 ### Native image requests
 
@@ -94,8 +95,8 @@ and require the destination's scheme, host, and effective port to match an allow
 origin. Reject userinfo, non-HTTP(S) destinations, and cross-origin redirects;
 do not attach shared cookies or log the URL/headers.
 
-Missing or unsupported exports return `nil`, allowing the legacy `handleImage(_:context:)`
-path for older plugins or image transforms. A thrown error is an explicit refusal:
+Missing or unsupported exports return `nil`, allowing the `handleImage(_:context:)`
+path for plugins that don't resolve requests natively or for image transforms. A thrown error is an explicit refusal:
 do not fall back to another fetch path. Keep request headers transient rather than
 persisting them with the logical image locator.
 
@@ -117,7 +118,7 @@ success, failure, and traps; the scalar acknowledgement allocates no response bu
 `runSettingsAction(_:context:)` runs an explicitly selected action, and `validateSettings(context:)` returns advisory issues
 keyed by setting ID (empty key for a form-level issue). Missing or Unsupported exports
 return `nil`; successful empty arrays or strings remain empty, and other typed failures
-throw. The existing settings schema and ABI 1 are unchanged.
+throw. The existing settings schema is unchanged.
 
 Run diagnostics against a temporary settings snapshot, including unsaved secret drafts
 when appropriate. Never persist action writes or log setting values. Actions must be
@@ -160,32 +161,28 @@ resolution. On revision changes restart paging; failed label resolution must not
 selections. Suggestions are called only when the capability flag is set. All new calls
 use the serialized execution lane and preserve cancellation.
 
-New optional exports require ABI 2 and exact signatures. Response byte budgets are checked
+New optional exports require exact signatures. Response byte budgets are checked
 before copying WASM memory; payloads and requests are validated against the rich-controls
 v1 contract. `ItoError.controlContractViolation` exposes only a rule code and, optionally,
 a validated identifier. Do not log values, queries, labels, catalog contents, or secrets.
-The legacy wire layouts, ABI version, and `FilterValue` variants are unchanged.
+The `FilterValue` variants are unchanged.
 
 ### Runner lifetime
 
-The bridge keeps a weak runner reference, breaking the loaded-runner retain cycle. Dropping
-the runner releases its ownership of the bridge and attached host modules; externally retained
-bridges/modules keep their own lifetimes. Standalone import callbacks retain their codecs and
-use the WASM caller's memory. Keep the runner alive when calling `WasmBridge.readRequest` or
-`writeResponse`; these utilities throw if their runner has gone away.
+A bridge holds no reference to its runner. Dropping the runner releases its ownership of the
+bridge and attached host modules; externally retained bridges/modules keep their own lifetimes.
+Standalone import callbacks retain their codecs and use the WASM caller's memory, and work
+without any runner.
 
 ### Error-report protocol versions
 
-The runner reads optional `ito_error_version() -> i32` from the module bytes before loading,
-without calling it. Absent means version 1. When present, it must be a function the module
-defines whose body is a single positive `i32.const`; an imported, computed, mistyped or
-non-function export rejects the load.
-Version 2 reports unsupported operations with the explicit `unsupported` category.
-Other failures remain refusals even if their message says “Unsupported operation.”
-
-For version 1 only, `other` plus that exact legacy text still means unsupported:
-older SDKs used it for both cases, so that historical ambiguity cannot be recovered.
-Typed authentication or server errors never become unsupported based on their text.
+The runner reads `ito_error_version() -> i32` from the module bytes before loading, without
+calling it. It must be a function the module defines whose body is a single `i32.const` of 2 or
+more; an absent, imported, computed, mistyped or non-function export rejects the load.
+Failures are then reported with an explicit category, and only the `unsupported` category means
+an unsupported operation. Other failures remain refusals even if their message says
+“Unsupported operation.” A plugin's `contractViolation` report is read by its fixed rule code
+only (`ItoError.catalogContractViolation`); its text is never kept or shown.
 
 ## License
 

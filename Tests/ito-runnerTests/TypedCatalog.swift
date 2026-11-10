@@ -1,17 +1,23 @@
 import Foundation
 @testable import ito_runner
 
+/// A page of entries of one kind.
+struct TypedPage<Entry: Sendable>: Sendable {
+    var entries: [Entry]
+    var hasNextPage: Bool
+}
+
 /// Typed views of the kind-neutral catalog API, for tests of single-kind scrapers. An entry of
 /// another kind fails the call rather than being dropped.
 extension ItoRunner {
-    func getMangaList(listing: Listing, page: Int32) async throws -> Manga.PageResult {
+    func getMangaList(listing: Listing, page: Int32) async throws -> TypedPage<Manga> {
         let result = try await getListing(listing, page: page, context: .test)
-        return Manga.PageResult(entries: try result.entries.map { try $0.require(\.manga) }, hasNextPage: result.hasNextPage)
+        return TypedPage(entries: try result.entries.map { try $0.require(\.manga) }, hasNextPage: result.hasNextPage)
     }
 
-    func getSearchMangaList(query: String, page: Int32) async throws -> Manga.PageResult {
+    func getSearchMangaList(query: String, page: Int32) async throws -> TypedPage<Manga> {
         let result = try await search(query: query, page: page, kind: .manga, context: .test)
-        return Manga.PageResult(entries: try result.entries.map { try $0.require(\.manga) }, hasNextPage: result.hasNextPage)
+        return TypedPage(entries: try result.entries.map { try $0.require(\.manga) }, hasNextPage: result.hasNextPage)
     }
 
     func getMangaUpdate(manga: Manga, needsDetails: Bool, needsChapters: Bool) async throws -> Manga {
@@ -22,9 +28,9 @@ extension ItoRunner {
         try await getChapterPages(entry: .manga(manga), chapter: chapter, context: .test)
     }
 
-    func getAnimeList(listing: Listing, page: Int32) async throws -> Anime.PageResult {
+    func getAnimeList(listing: Listing, page: Int32) async throws -> TypedPage<Anime> {
         let result = try await getListing(listing, page: page, context: .test)
-        return Anime.PageResult(entries: try result.entries.map { try $0.require(\.anime) }, hasNextPage: result.hasNextPage)
+        return TypedPage(entries: try result.entries.map { try $0.require(\.anime) }, hasNextPage: result.hasNextPage)
     }
 
     func getAnimeUpdate(anime: Anime, needsDetails: Bool, needsEpisodes: Bool) async throws -> Anime {

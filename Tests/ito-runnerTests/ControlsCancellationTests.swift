@@ -28,8 +28,7 @@ struct ControlsCancellationTests {
             (module
                 (import "ito:core/net" "fetch" (func $fetch (param i32 i32) (result i32)))
                 (memory (export "memory") 1)
-                (func (export "ito_abi_version") (result i32) i32.const 2)
-                (func (export "ito_supported_kinds") (result i32) i32.const 1)
+                \(abi3Prelude(kinds: 1))
                 (data (i32.const 64) "\\08http://x\\03GET\\00\\00")
                 (data (i32.const 128) "\\00\\00\\00")
                 (data (i32.const 256) "\\00\\00\\00\\00")

@@ -9,7 +9,7 @@ struct SettingsSchemaDecodingTests {
     private static let itoRsSchema = "0201067365727665720a5365727665722055524c000003076170695f6b657907415049206b6579011146726f6d20796f7572206163636f756e74"
 
     @Test func decodesTheSecretSettingProducedByTheRustSDK() throws {
-        let schema = try ItoPostcardDecoder(abiVersion: 2).decode(SettingsSchema.self, from: Self.bytes(Self.itoRsSchema))
+        let schema = try ItoPostcardDecoder(abiVersion: 3).decode(SettingsSchema.self, from: Self.bytes(Self.itoRsSchema))
 
         #expect(schema.settings.count == 2)
         guard case .text(let textID, let textName, let textSummary, let textDefault) = schema.settings[0] else {

@@ -7,15 +7,14 @@ import WasmKit
 private func watBytes(_ bytes: [UInt8]) -> String { bytes.map { String(format: "\\%02x", $0) }.joined() }
 private func packed(_ pointer: UInt64, _ count: Int) -> UInt64 { (pointer << 32) | UInt64(count) }
 
-/// Small ABI-2 module with independently observable call/deallocation counters.
-private func controlsModule(exports: String, data: [UInt8] = [0], abi: Int = 2,
+/// Small ABI 3 module with independently observable call/deallocation counters.
+private func controlsModule(exports: String, data: [UInt8] = [0],
                             failure: PluginErrorCategory? = nil) throws -> [UInt8] {
     var failureExports = ""
     if let failure {
-        let report = try ItoPostcardEncoder(abiVersion: 2).encode(PluginErrorPayload(category: failure, message: "Unsupported operation"))
+        let report = try ItoPostcardEncoder(abiVersion: 3).encode(PluginErrorPayload(category: failure, message: "Unsupported operation"))
         failureExports = """
         (data (i32.const 512) "\(watBytes(report))")
-        (func (export "ito_error_version") (result i32) i32.const 2)
         (func (export "ito_last_error") (result i64) i64.const \(packed(512, report.count)))
         """
     }
@@ -25,8 +24,7 @@ private func controlsModule(exports: String, data: [UInt8] = [0], abi: Int = 2,
             (global $calls (mut i32) (i32.const 0))
             (global $legacy (mut i32) (i32.const 0))
             (global $frees (mut i32) (i32.const 0))
-            (func (export "ito_abi_version") (result i32) i32.const \(abi))
-            (func (export "ito_supported_kinds") (result i32) i32.const 7)
+            \(abi3Prelude(kinds: 7))
             (func (export "alloc") (param i32) (result i32) i32.const 8192)
             (func (export "dealloc") (param i32 i32)
                 global.get $frees i32.const 1 i32.add global.set $frees)
@@ -133,15 +131,6 @@ struct ControlsExportTests {
             }
         }
     }
-    @Test(arguments: Operation.allCases)
-    func abiOneNeverCallsNewExports(_ operation: Operation) async throws {
-        let runner = ItoRunner()
-        try await runner.loadPlugin(fromBytes: controlsModule(exports: """
-            \(operation.capabilitySupport)
-            (func (export "\(operation.name)") \(operation.parameters) (result i64) unreachable)
-            """, abi: 1))
-        try await operation.invoke(runner)
-    }
     @Test func invalidRequestIsRejectedBeforeAllocation() async throws {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: controlsModule(exports: ""))
@@ -154,9 +143,9 @@ struct ControlsExportTests {
     @Test func optionRequestAndValidResponseCrossTheBoundary() async throws {
         let runner = ItoRunner()
         let request = OptionRequest(catalog: "tags", query: .values(["t1", "t9"]), limit: 2)
-        let expected = try ItoPostcardEncoder(abiVersion: 2).encode(request)
+        let expected = try ItoPostcardEncoder(abiVersion: 3).encode(request)
         let page = OptionPage(options: [ChoiceOption(value: "t1", label: "Romance", group: "Themes")], total: 1, revision: "r1")
-        let bytes = try ItoPostcardEncoder(abiVersion: 2).encode(page)
+        let bytes = try ItoPostcardEncoder(abiVersion: 3).encode(page)
         let checks = expected.enumerated().map { index, byte in
             "local.get $request i32.const \(index) i32.add i32.load8_u i32.const \(byte) i32.ne if unreachable end"
         }.joined(separator: "\n")
@@ -173,7 +162,7 @@ struct ControlsExportTests {
     @Test func successfulSuggestionsPreserveEmptyAndNonemptyResults() async throws {
         let runner = ItoRunner()
         for suggestions in [[], [SearchSuggestion(query: "Frieren", subtitle: "Title")]] {
-            let bytes = try ItoPostcardEncoder(abiVersion: 2).encode(suggestions)
+            let bytes = try ItoPostcardEncoder(abiVersion: 3).encode(suggestions)
             try await runner.loadPlugin(fromBytes: controlsModule(exports: """
                 \(Operation.suggestions.capabilitySupport)
                 (func (export "get_search_suggestions") (param i32 i32) (param $kind i32) (result i64)
@@ -234,7 +223,7 @@ struct SettingsSurfaceTests {
 @Suite("Dense search transport")
 struct SearchFiltersTransportTests {
     private func searchModule(capabilities: SearchCapabilities?, expected: [UInt8], failure: Bool = false) throws -> [UInt8] {
-        let payload = try capabilities.map { try ItoPostcardEncoder(abiVersion: 2).encode($0) } ?? [0]
+        let payload = try capabilities.map { try ItoPostcardEncoder(abiVersion: 3).encode($0) } ?? [0]
         let checks = expected.enumerated().map { index, byte in
             "local.get $filters i32.const \(index) i32.add i32.load8_u i32.const \(byte) i32.ne if unreachable end"
         }.joined(separator: "\n")
@@ -255,7 +244,7 @@ struct SearchFiltersTransportTests {
     @Test func denseDefaultsAreCachedPerKindAndReloadClearsCache() async throws {
         let c = Control(id: "adult", title: "Adult", kind: .toggle(ToggleControl(defaultValue: false)))
         let caps = SearchCapabilities(sections: [ControlSection(id: "s", title: "S", controls: [c])])
-        let expected = try ItoPostcardEncoder(abiVersion: 2).encode(caps.filterItems(values: [:]))
+        let expected = try ItoPostcardEncoder(abiVersion: 3).encode(caps.filterItems(values: [:]))
         let wasm = try searchModule(capabilities: caps, expected: expected)
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: wasm)

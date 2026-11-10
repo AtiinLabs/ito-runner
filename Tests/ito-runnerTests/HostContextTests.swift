@@ -122,8 +122,7 @@ struct HostContextTests {
           (memory (export "memory") 1)
           (data (i32.const 64) "\\08http://x\\03GET\\00\\00")
           (data (i32.const 128) "\\00")
-          (func (export "ito_abi_version") (result i32) (i32.const 2))
-          (func (export "ito_supported_kinds") (result i32) (i32.const 1))
+          \(abi3Prelude())
           (func (export "alloc") (param i32) (result i32) (i32.const 1024))
           (func (export "dealloc") (param i32 i32))
           (func (export "get_chapter_pages") (param i32 i32 i32 i32) (result i64)
@@ -172,7 +171,7 @@ struct HostContextTests {
         }
         #expect(await net.contexts == contexts)
         #expect(await net.requests.map(\.url) == Array(repeating: "http://x", count: 4))
-        #expect(ItoRunner.supportedABIVersions == 1...2)
+        #expect(ItoRunner.supportedABIVersions == 3...3)
     }
 
     @Test(arguments: [NetworkOperationContext.Purpose.automaticLibraryUpdate, .interactiveSearch, .coverImage])

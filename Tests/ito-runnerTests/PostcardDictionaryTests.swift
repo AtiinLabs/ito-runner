@@ -12,8 +12,8 @@ struct PostcardDictionaryTests {
 
     @Test("Decode Dictionary")
     func testDictionary() throws {
-        let encoder = ItoPostcardEncoder(abiVersion: 2)
-        let decoder = ItoPostcardDecoder(abiVersion: 2)
+        let encoder = ItoPostcardEncoder(abiVersion: 3)
+        let decoder = ItoPostcardDecoder(abiVersion: 3)
 
         // Map with 1 entry: "A" -> "B"
         // Postcard Map Encoding:

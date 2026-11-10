@@ -1,9 +1,9 @@
 import Foundation
 
-/// The ABI to name for payloads whose layout is the same in every supported ABI: host-module
-/// requests and responses, settings and controls, error reports and image requests. Layouts that
-/// differ by ABI (chapters) take the loaded plugin's ABI instead.
-let sharedLayoutABIVersion = 2
+/// The ABI the runner's payloads are laid out for: the one ABI it supports. Settings and controls,
+/// error reports, image requests and host-module requests are read and written with it, as are
+/// the chapters and entries exchanged with plugins.
+let sharedLayoutABIVersion = 3
 
 /// A custom Decoder that decodes Postcard binary format into Swift `Decodable` types.
 public struct ItoPostcardDecoder: Sendable {
@@ -45,6 +45,7 @@ public struct ItoPostcardDecoder: Sendable {
         }
 
         let resolvedType = try T(from: decoder)
+        guard !decoder.readInvalidOptionTag else { throw invalidOptionTag }
 
         // Ensure all bytes were consumed
         guard decoder.isAtEnd else {
@@ -73,6 +74,9 @@ private class _PostcardDecoder: Decoder {
 
     let data: [UInt8]
     var currentIndex: Int = 0
+    /// Set when an option tag other than 0 or 1 was read. `decodeNil` on a single value can't
+    /// throw, so the failure is raised by whoever started the decode, once it returns.
+    var readInvalidOptionTag = false
 
     init(data: [UInt8]) {
         self.data = data
@@ -161,14 +165,9 @@ private struct _PostcardKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCon
     }
 
     func decodeNil(forKey key: Key) throws -> Bool {
-        if !decoder.isAtEnd && decoder.data[decoder.currentIndex] == 0 {
-            decoder.currentIndex += 1
-            return true
-        }
-        if !decoder.isAtEnd && decoder.data[decoder.currentIndex] == 1 {
-            decoder.currentIndex += 1
-        }
-        return false
+        let isNil = _PostcardSingleValueDecoder(decoder: decoder).decodeNil()
+        if decoder.readInvalidOptionTag { throw invalidOptionTag }
+        return isNil
     }
 
     func decode<T>(_ type: T.Type, forKey key: Key) throws -> T where T: Decodable {
@@ -406,11 +405,9 @@ private struct _PostcardUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         let key = AnyCodingKey(intValue: currentIndex)!
         decoder.codingPath.append(key)
         defer { decoder.codingPath.removeLast() }
-        let isNil = try _PostcardSingleValueDecoder(decoder: decoder).decodeNil()
-        if !isNil {
-            // We didn't consume it if it was not nil (in some implementations)
-            // but our single value decoder DOES consume the `1` byte.
-        }
+        // The single value decoder consumes the tag, whichever it is.
+        let isNil = _PostcardSingleValueDecoder(decoder: decoder).decodeNil()
+        if decoder.readInvalidOptionTag { throw invalidOptionTag }
         currentIndex += 1
         return isNil
     }
@@ -552,16 +549,20 @@ private struct _PostcardSingleValueDecoder: SingleValueDecodingContainer {
     let decoder: _PostcardDecoder
 
     func decodeNil() -> Bool {
-        // We peek to see if the next byte is 0 (None)
-        if !decoder.isAtEnd && decoder.data[decoder.currentIndex] == 0 {
+        guard !decoder.isAtEnd else { return false }  // The value that follows reports the missing data.
+        switch decoder.data[decoder.currentIndex] {
+        case 0:
             decoder.currentIndex += 1
             return true
-        }
-        // If it's 1 (Some), we consume it and return false meaning "not nil"
-        if !decoder.isAtEnd && decoder.data[decoder.currentIndex] == 1 {
+        case 1:
             decoder.currentIndex += 1
+            return false
+        default:
+            // Postcard writes an option as 0 or 1 and nothing else; a reader that took any other
+            // tag for "present" would accept bytes the SDK rejects.
+            decoder.readInvalidOptionTag = true
+            return true
         }
-        return false
     }
 
     func decode(_ type: Bool.Type) throws -> Bool {
@@ -580,7 +581,11 @@ private struct _PostcardSingleValueDecoder: SingleValueDecodingContainer {
         }
 
         let slice = try decoder.consume(Int(length))
-        guard let string = String(bytes: slice, encoding: .utf8) else {
+        // `String(bytes:encoding:)` drops a leading byte-order mark, which would change a key the
+        // plugin will be sent back. Decoding repairs invalid UTF-8 with U+FFFD, so a string
+        // whose bytes differ from the input was not valid, and nothing is lost or altered silently.
+        let string = String(decoding: slice, as: UTF8.self)
+        guard string.utf8.elementsEqual(slice) else {
             throw ItoError.postcardDecodingError("Failed to decode UTF-8 string.")
         }
         return string
@@ -682,6 +687,8 @@ private struct _PostcardSingleValueDecoder: SingleValueDecodingContainer {
         return Int64(bitPattern: (value >> 1) ^ (~(value & 1) &+ 1))
     }
 }
+
+private let invalidOptionTag = ItoError.postcardDecodingError("Invalid option tag.")
 
 /// Converts a decoded integer to a narrower type, throwing when the plugin sent a value that
 /// doesn't fit instead of trapping and taking the app down with it.

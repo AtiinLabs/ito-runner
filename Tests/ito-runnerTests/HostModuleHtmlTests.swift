@@ -67,6 +67,7 @@ struct HostModuleHtmlTests {
             (module
                 (import "ito:core/html" "parse" (func $html_parse (param i32 i32) (result i32)))
                 (memory (export "memory") 1)
+                \(abi3Prelude())
 
                 ;; Data string at offset 16: "<html><body>Hello</body></html>" -> 31 bytes
                 (data (i32.const 16) "<html><body>Hello</body></html>")
@@ -110,6 +111,7 @@ struct HostModuleHtmlTests {
             (module
                 (import "ito:core/html" "select" (func $html_select (param i32 i32 i32) (result i64)))
                 (memory (export "memory") 1)
+                \(abi3Prelude())
 
                 ;; Data string at offset 16: "body" -> 4 bytes
                 (data (i32.const 16) "body")
@@ -151,7 +153,7 @@ struct HostModuleHtmlTests {
         RunnerLogger.core.debug("responseBytes length: \(responseBytes.count)")
         RunnerLogger.core.debug("responseBytes: \(responseBytes)")
 
-        let elements = try ItoPostcardDecoder(abiVersion: 2).decode([Int32].self, from: responseBytes)
+        let elements = try ItoPostcardDecoder(abiVersion: 3).decode([Int32].self, from: responseBytes)
         #expect(elements == [43, 44])
     }
 }

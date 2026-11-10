@@ -11,14 +11,13 @@ public actor ItoRunner {
 
     /// The memory space shared by the Wasm plugin and swift.
     private var memory: Memory?
-    private var errorProtocolVersion: UInt32 = 1
 
-    /// The ABI the loaded plugin was built for (`ito_abi_version`).
-    public private(set) var abiVersion = 1
-    /// The kinds the loaded plugin serves. Plugins built for ABI 1 serve one, named by their exports.
+    /// The ABI the loaded plugin was built for (`ito_abi_version`); 0 until a plugin is loaded.
+    public private(set) var abiVersion = 0
+    /// The kinds the loaded plugin serves (`ito_supported_kinds`).
     public private(set) var supportedKinds: [MediaKind] = []
 
-    /// Decodes payloads laid out the same in every ABI (settings, errors, image requests).
+    /// Decodes the payloads that carry no chapters (settings, error reports, image requests).
     private let postcardDecoder = ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion)
 
     private enum CapabilitiesEntry {
@@ -119,12 +118,17 @@ public actor ItoRunner {
         try loadPlugin(fromBytes: [UInt8](wasmBytes))
     }
 
-    /// The ABI versions (`ito_abi_version`) of plugins this runner can run. A plugin without the
-    /// export was built before it existed, which is version 1.
-    public static let supportedABIVersions: ClosedRange<Int> = 1...2
+    /// The ABI versions (`ito_abi_version`) of plugins this runner can run: ABI 3 only. A plugin
+    /// without the export, or with an older or newer version, is refused before anything of it is
+    /// decoded or instantiated.
+    public static let supportedABIVersions: ClosedRange<Int> = 3...3
+
+    /// The first `ito_error_version` that reports failures with an explicit category, which every
+    /// plugin this runner loads must declare.
+    static let minimumErrorProtocolVersion: UInt32 = 2
 
     /// The host functions this runner provides, by module ("ito:core/net") and name.
-    public static let supportedImports: [String: Set<String>] = WasmBridge(runner: ItoRunner())
+    public static let supportedImports: [String: Set<String>] = WasmBridge()
         .buildImportTable(store: Store(engine: Engine()))
         .mapValues { Set($0.keys) }
 
@@ -140,8 +144,9 @@ public actor ItoRunner {
     }
 
     /// Loads a plugin directly from a WebAssembly byte array. A plugin that imports host functions
-    /// this runner lacks, has a start section, or was built for an unsupported ABI is refused
-    /// before anything of it is instantiated, so none of its code runs. A module that passes those
+    /// this runner lacks, has a start section, was built for an unsupported ABI, or declares no
+    /// usable kinds or an old error-report version is refused before anything of it is
+    /// instantiated, so none of its code runs. A module that passes those
     /// checks throws `reloadDuringActiveExport` instead of replacing executing Wasm memory. A
     /// successful reload makes queued calls from the previous generation throw `pluginReloaded`.
     /// Use a fresh runner for a new source/account session or independent simultaneous
@@ -156,11 +161,16 @@ public actor ItoRunner {
             guard Self.supportedABIVersions.contains(binary.abiVersion) else {
                 throw ItoError.unsupportedABI(version: binary.abiVersion, supported: Self.supportedABIVersions)
             }
-            // The same verdict `compatibility(of:)` gives: without a constant naming known kinds,
+            // The same verdicts `compatibility(of:)` gives: without a constant naming known kinds,
             // calling the export after instantiation would run plugin code.
-            guard binary.abiVersion < 2 || binary.kinds != nil else {
+            guard binary.kinds != nil else {
                 throw ItoError.wasmTrap(
                     "ito_supported_kinds must be a defined () -> i32 returning a constant that names kinds this host knows."
+                )
+            }
+            guard binary.errorProtocolVersion >= Self.minimumErrorProtocolVersion else {
+                throw ItoError.wasmTrap(
+                    "ito_error_version must be at least \(Self.minimumErrorProtocolVersion): the plugin reports failures in a format this host no longer reads."
                 )
             }
 
@@ -172,7 +182,7 @@ public actor ItoRunner {
             let module = try parseWasm(bytes: wasmBytes, limits: Self.parsingLimits)
 
             // 4. Setup Imports
-            let bridge = WasmBridge(runner: self)
+            let bridge = WasmBridge()
             bridge.netModule = self.netModule
             bridge.htmlModule = self.htmlModule
             bridge.stdModule = self.stdModule
@@ -213,11 +223,8 @@ public actor ItoRunner {
             guard case .memory(let memory)? = instance.exports["memory"] else {
                 throw ItoError.wasmTrap("Plugin did not export linear 'memory'.")
             }
-            // Version 1 encoded Unsupported as an ordinary failure message; version 2 gives it an
-            // explicit category. It was read statically, so learning it runs no plugin code.
-            let errorProtocolVersion = binary.errorProtocolVersion
-            let kinds = try Self.supportedKinds(of: instance, abi: abi)
-            if abi >= 2, binary.kinds != kinds {
+            let kinds = try Self.supportedKinds(of: instance)
+            guard binary.kinds == kinds else {
                 throw ItoError.wasmTrap("ito_supported_kinds returned other kinds than the constant it was read as.")
             }
 
@@ -226,7 +233,6 @@ public actor ItoRunner {
             self.instance = instance
             self.bridge = bridge
             self.memory = memory
-            self.errorProtocolVersion = errorProtocolVersion
             self.abiVersion = abi
             self.supportedKinds = kinds
             self.capabilitiesByKind.removeAll()
@@ -239,28 +245,19 @@ public actor ItoRunner {
         }
     }
 
-    /// The ABI version `instance` was built for: its `ito_abi_version` export, or 1 without one.
+    /// The ABI version `instance` was built for: its `ito_abi_version` export.
     private static func abiVersion(of instance: Instance) throws -> Int {
-        guard case .function(let function)? = instance.exports["ito_abi_version"] else { return 1 }
+        guard case .function(let function)? = instance.exports["ito_abi_version"] else {
+            throw ItoError.wasmTrap("ito_abi_version is not exported as a function.")
+        }
         guard case .i32(let version)? = try function([]).first else {
             throw ItoError.wasmTrap("ito_abi_version must return an i32")
         }
         return Int(version)
     }
 
-    /// The list export each kind's ABI 1 plugin has.
-    private static let legacyListExports: [MediaKind: String] = [
-        .manga: "get_manga_list", .anime: "get_anime_list", .novel: "get_novel_list"
-    ]
-
-    /// The kinds `instance` serves: its `ito_supported_kinds` mask from ABI 2, or for an older
-    /// plugin the kind whose exports it has.
-    private static func supportedKinds(of instance: Instance, abi: Int) throws -> [MediaKind] {
-        guard abi >= 2 else {
-            return MediaKind.allCases.filter { kind in
-                legacyListExports[kind].map { instance.exports[$0] != nil } ?? false
-            }
-        }
+    /// The kinds `instance` serves: its `ito_supported_kinds` mask.
+    private static func supportedKinds(of instance: Instance) throws -> [MediaKind] {
         guard case .function(let function)? = instance.exports["ito_supported_kinds"],
               function.type.parameters.isEmpty,
               function.type.results == [.i32],
@@ -385,11 +382,33 @@ public actor ItoRunner {
         instance?.exports[name] != nil
     }
 
+    /// A byte budget on a response, checked against its declared length before any of it is read
+    /// from plugin memory, and the error a response over the budget throws: a controls violation
+    /// for the rich-controls exports, a catalog violation for the catalog exports.
+    private enum ResponseLimit {
+        case controls(maxBytes: Int)
+        case catalog
+
+        var maxBytes: Int {
+            switch self {
+            case .controls(let maxBytes): return maxBytes
+            case .catalog: return CatalogLimits.responseBytes
+            }
+        }
+
+        func exceeded(in function: String) -> ItoError {
+            switch self {
+            case .controls: return .controlContractViolation(function: function, violation: .init(.responseTooLarge))
+            case .catalog: return .catalogContractViolation(function: function, violation: .init(.responseTooLarge))
+            }
+        }
+    }
+
     /// Runs an export that returns a packed `(pointer << 32) | length` result and returns the result
     /// bytes, or nil when the export returned 0. The SDK returns 0 both for "nothing" (no settings,
-    /// an unsupported image) and for failures; a failure is told apart by the reason the plugin
-    /// printed, see `failure(of:)`.
-    private func callPacked(_ name: String, _ arguments: [ExportArgument] = [], maxBytes: Int? = nil) throws -> [UInt8]? {
+    /// an unsupported image) and for failures; a failure is told apart by what the plugin reported,
+    /// see `failure(of:)`.
+    private func callPacked(_ name: String, _ arguments: [ExportArgument] = [], limit: ResponseLimit? = nil) throws -> [UInt8]? {
         var allocations: [(ptr: Int32, len: Int32)] = []
         defer {
             for allocation in allocations {
@@ -425,8 +444,8 @@ public actor ItoRunner {
                 ptr: Int32(bitPattern: UInt32(responsePointer)),
                 len: Int32(bitPattern: UInt32(responseLength)))
         }
-        if let maxBytes, responseLength > maxBytes {
-            throw ItoError.controlContractViolation(function: name, violation: .init(.responseTooLarge))
+        if let limit, responseLength > limit.maxBytes {
+            throw limit.exceeded(in: name)
         }
         return try readMemory(offset: responsePointer, length: responseLength)
     }
@@ -446,50 +465,75 @@ public actor ItoRunner {
     }
 
     private func isUnsupported(_ failure: (reason: String, category: PluginErrorCategory)) -> Bool {
-        failure.category == .unsupported ||
-            (errorProtocolVersion == 1 && failure.category == .other &&
-                failure.reason == WasmBridge.unsupportedReason)
+        failure.category == .unsupported
+    }
+
+    /// The error for a failure `function` reported. A contract violation keeps only the rule it
+    /// names, when this runner lists it: the rest of its message is plugin text.
+    private func itoError(of function: String, reported: (reason: String, category: PluginErrorCategory)) -> ItoError {
+        if reported.category == .contractViolation {
+            return .catalogContractViolation(function: function, violation: .init(reportedCode: reported.reason))
+        }
+        return .pluginFailed(function: function, reason: reported.reason, category: reported.category)
     }
 
     /// The failure of `name`, with what the plugin reported while it ran.
     private func failure(of name: String) throws -> ItoError {
-        let reported = try reportedFailure()
-        return .pluginFailed(function: name, reason: reported?.reason, category: reported?.category ?? .other)
+        guard let reported = try reportedFailure() else {
+            return .pluginFailed(function: name, reason: nil, category: .other)
+        }
+        return itoError(of: name, reported: reported)
+    }
+
+    /// Runs `body`, which reads or checks a chapter catalog, and reports a violation it throws as
+    /// the failure of `function`.
+    private static func reportingViolations<T>(of function: String, _ body: () throws -> T) throws -> T {
+        do { return try body() }
+        catch let violation as CatalogContractViolation {
+            throw ItoError.catalogContractViolation(function: function, violation: violation)
+        }
+    }
+
+    /// Decodes a response that can carry chapters: a kind this runner doesn't know is a violation
+    /// of the catalog contract, not a decoding error.
+    private static func decodeCatalog<T: Decodable>(_ type: T.Type, from bytes: [UInt8], function: String) throws -> T {
+        try reportingViolations(of: function) {
+            try ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion).decode(type, from: bytes)
+        }
     }
 
     /// Runs an export that always returns a value on success. A 0 return is a plugin failure.
-    /// `abi` is the layout to read, from the caller's `Contract`.
     private func callDecoding<T: Decodable>(
         _ type: T.Type,
         _ name: String,
         _ arguments: [ExportArgument] = [],
-        abi: Int
+        limit: ResponseLimit? = nil
     ) throws -> T {
-        guard let bytes = try callPacked(name, arguments) else {
+        guard let bytes = try callPacked(name, arguments, limit: limit) else {
             throw try failure(of: name)
         }
-        return try ItoPostcardDecoder(abiVersion: abi).decode(T.self, from: bytes)
+        return try Self.decodeCatalog(type, from: bytes, function: name)
     }
 
-    /// Optional results preserve legacy protocol-1 Unsupported messages, but typed refusals
-    /// never become capability signals merely because their text says "Unsupported operation".
-    private func callOptional(_ name: String, _ arguments: [ExportArgument] = []) throws -> [UInt8]? {
-        if let bytes = try callPacked(name, arguments) { return bytes }
+    /// Optional results: a typed refusal never becomes a capability signal merely because its
+    /// text says "Unsupported operation"; only the `unsupported` category does.
+    private func callOptional(_ name: String, _ arguments: [ExportArgument] = [], limit: ResponseLimit? = nil) throws -> [UInt8]? {
+        if let bytes = try callPacked(name, arguments, limit: limit) { return bytes }
         guard let reported = try reportedFailure() else { return nil }
         if isUnsupported(reported) { return nil }
-        throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
+        throw itoError(of: name, reported: reported)
     }
 
     private func callBounded(_ name: String, _ args: [ExportArgument], parameters: [ValueType], maxBytes: Int) throws -> [UInt8]? {
-        guard abiVersion >= 2, let export = instance?.exports[name] else { return nil }
+        guard let export = instance?.exports[name] else { return nil }
         guard case .function(let function) = export,
               function.type.parameters == parameters, function.type.results == [.i64] else {
             throw ItoError.controlContractViolation(function: name, violation: .init(.signature))
         }
-        if let bytes = try callPacked(name, args, maxBytes: maxBytes) { return bytes }
+        if let bytes = try callPacked(name, args, limit: .controls(maxBytes: maxBytes)) { return bytes }
         guard let reported = try reportedFailure() else { return nil }
         if isUnsupported(reported) { return nil }
-        throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
+        throw itoError(of: name, reported: reported)
     }
 
     private func decodeControls<T>(_ name: String, _ decode: () throws -> T) throws -> T {
@@ -536,7 +580,7 @@ public actor ItoRunner {
     }
 
     public func getSearchCapabilities(kind: MediaKind?, context: NetworkOperationContext) async throws -> SearchCapabilities? {
-        guard abiVersion >= 2, kind.map({ supportedKinds.contains($0) }) ?? true else { return nil }
+        guard kind.map({ supportedKinds.contains($0) }) ?? true else { return nil }
         return try await performSerialized(context: context) {
             switch try self.capabilities(kind?.wireValue ?? -1) {
             case .available(let capabilities): return capabilities
@@ -556,8 +600,7 @@ public actor ItoRunner {
     }
 
     public func getSearchSuggestions(query: String, kind: MediaKind?, context: NetworkOperationContext) async throws -> [SearchSuggestion]? {
-        guard (1...256).contains(query.utf8.count), abiVersion >= 2,
-              kind.map({ supportedKinds.contains($0) }) ?? true else { return nil }
+        guard (1...256).contains(query.utf8.count), kind.map({ supportedKinds.contains($0) }) ?? true else { return nil }
         return try await performSerialized(context: context) {
             guard case .available(let capabilities) = try self.capabilities(kind?.wireValue ?? -1),
                   capabilities.flags.contains(.suggestions) else { return nil }
@@ -567,11 +610,11 @@ public actor ItoRunner {
         }
     }
 
-    /// Runs a completion export: ABI 1's `mark_chapter_read`/`mark_episode_watched(media, unit)`, or
-    /// ABI 2's `mark_completed(kind, media, unit)` when `kind` is given.
-    private func callCompletion(_ name: String, kind: MediaKind? = nil, mediaKey: String, unitKey: String) throws -> Bool {
+    /// Runs the `mark_completed(kind, media, unit)` export.
+    private func callCompletion(kind: MediaKind, mediaKey: String, unitKey: String) throws -> Bool {
+        let name = "mark_completed"
         guard let exported = instance?.exports[name] else { return false }
-        let parameterCount = kind == nil ? 4 : 5
+        let parameterCount = 5
         guard case .function(let function) = exported,
               function.type.parameters.count == parameterCount,
               function.type.parameters.allSatisfy({ $0 == .i32 }),
@@ -582,7 +625,7 @@ public actor ItoRunner {
         defer { deallocBytes(ptr: media.ptr, len: media.len) }
         let unit = try allocBytes(unitKey.utf8)
         defer { deallocBytes(ptr: unit.ptr, len: unit.len) }
-        var arguments: [Value] = kind.map { [.i32(UInt32(bitPattern: $0.wireValue))] } ?? []
+        var arguments: [Value] = [.i32(UInt32(bitPattern: kind.wireValue))]
         arguments += [
             .i32(UInt32(bitPattern: media.ptr)), .i32(UInt32(bitPattern: media.len)),
             .i32(UInt32(bitPattern: unit.ptr)), .i32(UInt32(bitPattern: unit.len))
@@ -597,7 +640,7 @@ public actor ItoRunner {
         case 0:
             guard let reported = try reportedFailure() else { return false }
             if isUnsupported(reported) { return false }
-            throw ItoError.pluginFailed(function: name, reason: reported.reason, category: reported.category)
+            throw itoError(of: name, reported: reported)
         default:
             throw ItoError.wasmTrap("Invalid completion acknowledgement: \(name)")
         }
@@ -607,10 +650,11 @@ public actor ItoRunner {
 
     /// Executes `get_home()`
     public func getHome(context: NetworkOperationContext) async throws -> HomeLayout {
-        let contract = self.contract
+        let kinds = supportedKinds
         return try await performSerialized(context: context) {
-            let home = try self.callDecoding(HomeLayout.self, "get_home", abi: contract.abi)
-            try Self.requireServed(home.components.flatMap(\.value.entries), by: contract, in: "get_home")
+            let home = try self.callDecoding(HomeLayout.self, "get_home")
+            try Self.requireServed(home.components.flatMap(\.value.entries), by: kinds, in: "get_home")
+            try Self.reportingViolations(of: "get_home") { try CatalogValidation.home(home) }
             return home
         }
     }
@@ -658,13 +702,14 @@ public actor ItoRunner {
 
     /// Executes `handle_url()` if exported by the plugin. Nil when the plugin doesn't handle the URL.
     public func handleUrl(_ url: String, context: NetworkOperationContext) async throws -> LinkValue? {
-        let abi = abiVersion
-        return try await performSerialized(context: context) {
+        try await performSerialized(context: context) {
             guard self.isExported("handle_url"),
-                let bytes = try self.callOptional("handle_url", [.bytes(Array(url.utf8))])
+                let bytes = try self.callOptional("handle_url", [.bytes(Array(url.utf8))], limit: .catalog)
             else { return nil }
-            // A link can carry a manga or novel with its chapters, laid out as the plugin's ABI says.
-            return try ItoPostcardDecoder(abiVersion: abi).decode(LinkValue.self, from: bytes)
+            // A link can carry a manga or novel with its chapters.
+            let link = try Self.decodeCatalog(LinkValue.self, from: bytes, function: "handle_url")
+            try Self.reportingViolations(of: "handle_url") { try CatalogValidation.link(link) }
+            return link
         }
     }
 
@@ -733,56 +778,25 @@ public actor ItoRunner {
 
     // MARK: - Catalog
 
-    /// The loaded plugin's ABI and kinds, read on the actor before a call is queued so a call
-    /// sees one consistent plugin.
-    private struct Contract {
-        let abi: Int
-        let kinds: [MediaKind]
+    /// Plugins read their arguments in the one layout of the supported ABI.
+    private static let encoder = ItoPostcardEncoder(abiVersion: sharedLayoutABIVersion)
 
-        var encoder: ItoPostcardEncoder { ItoPostcardEncoder(abiVersion: abi) }
-
-        /// The kind an ABI 1 plugin serves, which picks its exports.
-        func legacyKind() throws -> MediaKind {
-            guard let kind = kinds.first else {
-                throw ItoError.wasmTrap("The plugin exports no catalog.")
-            }
-            return kind
-        }
-    }
-
-    private var contract: Contract { Contract(abi: abiVersion, kinds: supportedKinds) }
-
-    /// An ABI 2 plugin declared the kinds it serves; an entry of another kind is a plugin error,
-    /// not something to show. ABI 1 plugins answer with their one kind by construction.
-    private static func requireServed(_ entries: [MediaEntry], by contract: Contract, in function: String) throws {
-        guard contract.abi >= 2,
-              let stray = entries.first(where: { !contract.kinds.contains($0.kind) }) else { return }
+    /// A plugin declared the kinds it serves; an entry of another kind is a plugin error, not
+    /// something to show.
+    private static func requireServed(_ entries: [MediaEntry], by kinds: [MediaKind], in function: String) throws {
+        guard let stray = entries.first(where: { !kinds.contains($0.kind) }) else { return }
         throw ItoError.pluginFailed(
             function: function, reason: "The plugin returned a kind it doesn't serve (\(stray.kind.rawValue)).")
     }
 
     /// Lists a page of `listing`.
     public func getListing(_ listing: Listing, page: Int32, context: NetworkOperationContext) async throws -> MediaPageResult {
-        let contract = self.contract
+        let kinds = supportedKinds
         return try await performSerialized(context: context) {
-            let arguments: [ExportArgument] = [.bytes(try contract.encoder.encode(listing)), .int(page)]
-            let result: MediaPageResult
-            if contract.abi >= 2 {
-                result = try self.callDecoding(MediaPageResult.self, "get_listing", arguments, abi: contract.abi)
-            } else {
-                switch try contract.legacyKind() {
-                case .manga:
-                    result = MediaPageResult(
-                        try self.callDecoding(Manga.PageResult.self, "get_manga_list", arguments, abi: contract.abi))
-                case .anime:
-                    result = MediaPageResult(
-                        try self.callDecoding(Anime.PageResult.self, "get_anime_list", arguments, abi: contract.abi))
-                case .novel:
-                    result = MediaPageResult(
-                        try self.callDecoding(Novel.PageResult.self, "get_novel_list", arguments, abi: contract.abi))
-                }
-            }
-            try Self.requireServed(result.entries, by: contract, in: "get_listing")
+            let arguments: [ExportArgument] = [.bytes(try Self.encoder.encode(listing)), .int(page)]
+            let result = try self.callDecoding(MediaPageResult.self, "get_listing", arguments)
+            try Self.requireServed(result.entries, by: kinds, in: "get_listing")
+            try Self.reportingViolations(of: "get_listing") { try CatalogValidation.entries(result.entries) }
             return result
         }
     }
@@ -791,109 +805,63 @@ public actor ItoRunner {
     /// A kind the plugin doesn't serve finds nothing without calling it.
     public func search(query: String, page: Int32, kind: MediaKind? = nil, filterValues: [String: ControlValue] = [:], context: NetworkOperationContext)
         async throws -> MediaPageResult {
-        let contract = self.contract
-        if let kind, !contract.kinds.contains(kind) {
+        let kinds = supportedKinds
+        if let kind, !kinds.contains(kind) {
             return MediaPageResult(entries: [], hasNextPage: false)
         }
         return try await performSerialized(context: context) {
             let filters: [FilterItem]
-            if contract.abi >= 2, case .available(let capabilities) = try self.capabilities(kind?.wireValue ?? -1) {
+            if case .available(let capabilities) = try self.capabilities(kind?.wireValue ?? -1) {
                 filters = capabilities.filterItems(values: filterValues)
             } else { filters = [] }
-            let arguments: (Int32?) throws -> [ExportArgument] = { kind in
-                [.bytes(Array(query.utf8)), .int(page)] + (kind.map { [.int($0)] } ?? [])
-                    + [.bytes(try contract.encoder.encode(filters))]
-            }
-            let result: MediaPageResult
-            if contract.abi >= 2 {
-                result = try self.callDecoding(
-                    MediaPageResult.self, "search", arguments(kind?.wireValue ?? -1), abi: contract.abi)
-            } else {
-                switch try contract.legacyKind() {
-                case .manga:
-                    result = MediaPageResult(try self.callDecoding(
-                        Manga.PageResult.self, "get_search_manga_list", arguments(nil), abi: contract.abi))
-                case .anime:
-                    result = MediaPageResult(try self.callDecoding(
-                        Anime.PageResult.self, "get_search_anime_list", arguments(nil), abi: contract.abi))
-                case .novel:
-                    result = MediaPageResult(try self.callDecoding(
-                        Novel.PageResult.self, "get_search_novel_list", arguments(nil), abi: contract.abi))
-                }
-            }
-            try Self.requireServed(result.entries, by: contract, in: "search")
+            let arguments: [ExportArgument] = [
+                .bytes(Array(query.utf8)), .int(page), .int(kind?.wireValue ?? -1),
+                .bytes(try Self.encoder.encode(filters))
+            ]
+            let result = try self.callDecoding(MediaPageResult.self, "search", arguments)
+            try Self.requireServed(result.entries, by: kinds, in: "search")
+            try Self.reportingViolations(of: "search") { try CatalogValidation.entries(result.entries) }
             return result
         }
     }
 
     /// Fills in `entry`'s details and/or its chapters or episodes. The result is the same kind.
+    /// The entry reaches the plugin without its catalog, which describes the list the plugin is
+    /// about to replace, and the response may not exceed `CatalogLimits.responseBytes`.
     public func getMediaUpdate(_ entry: MediaEntry, needsDetails: Bool = true, needsUnits: Bool = true, context: NetworkOperationContext)
         async throws -> MediaEntry {
-        let contract = self.contract
-        return try await performSerialized(context: context) {
-            let flags: [ExportArgument] = [.flag(needsDetails), .flag(needsUnits)]
-            let encoder = contract.encoder
-            let updated: MediaEntry
-            if contract.abi >= 2 {
-                updated = try self.callDecoding(
-                    MediaEntry.self, "get_media_update",
-                    [.bytes(try encoder.encode(entry.resolvingChapterKinds()))] + flags, abi: contract.abi)
-            } else {
-                switch entry {
-                case .manga(let manga):
-                    updated = .manga(try self.callDecoding(
-                        Manga.self, "get_manga_update", [.bytes(try encoder.encode(manga))] + flags, abi: contract.abi))
-                case .anime(let anime):
-                    updated = .anime(try self.callDecoding(
-                        Anime.self, "get_anime_update", [.bytes(try encoder.encode(anime))] + flags, abi: contract.abi))
-                case .novel(let novel):
-                    updated = .novel(try self.callDecoding(
-                        Novel.self, "get_novel_update", [.bytes(try encoder.encode(novel))] + flags, abi: contract.abi))
-                }
-            }
+        try await performSerialized(context: context) {
+            let arguments: [ExportArgument] = [
+                .bytes(try Self.encoder.encode(entry.resolvingChapterKinds().withoutCatalog())),
+                .flag(needsDetails), .flag(needsUnits)
+            ]
+            let updated = try self.callDecoding(MediaEntry.self, "get_media_update", arguments, limit: .catalog)
             guard updated.kind == entry.kind else {
                 throw ItoError.pluginFailed(
                     function: "get_media_update", reason: "The plugin returned a different kind of entry.")
             }
+            try Self.reportingViolations(of: "get_media_update") { try CatalogValidation.entry(updated) }
             return updated
         }
     }
 
     /// The pages of `chapter`, one of `entry`'s, to read as `entry.contentKind(of:)` says.
     public func getChapterPages(entry: MediaEntry, chapter: Chapter, context: NetworkOperationContext) async throws -> [Page] {
-        let contract = self.contract
-        return try await performSerialized(context: context) {
-            let encoder = contract.encoder
+        try await performSerialized(context: context) {
             var chapter = chapter
             chapter.kind = entry.contentKind(of: chapter)
-            let chapterBytes = ExportArgument.bytes(try encoder.encode(chapter))
-            if contract.abi >= 2 {
-                return try self.callDecoding(
-                    [Page].self, "get_chapter_pages",
-                    [.bytes(try encoder.encode(entry.resolvingChapterKinds())), chapterBytes], abi: contract.abi)
-            }
-            switch entry {
-            case .manga(let manga):
-                return try self.callDecoding(
-                    [Page].self, "get_page_list", [.bytes(try encoder.encode(manga)), chapterBytes], abi: contract.abi)
-            case .novel(let novel):
-                return try self.callDecoding(
-                    [Page].self, "get_chapter_content", [.bytes(try encoder.encode(novel)), chapterBytes],
-                    abi: contract.abi)
-            case .anime:
-                throw ItoError.pluginFailed(function: "get_chapter_pages", reason: "Anime has episodes, not chapters.")
-            }
+            return try self.callDecoding(
+                [Page].self, "get_chapter_pages",
+                [.bytes(try Self.encoder.encode(entry.resolvingChapterKinds())), .bytes(try Self.encoder.encode(chapter))])
         }
     }
 
     /// The streams of `episode`, one of `anime`'s.
     public func getEpisodeVideos(anime: Anime, episode: Anime.Episode, context: NetworkOperationContext) async throws -> [Anime.Video] {
-        let contract = self.contract
-        return try await performSerialized(context: context) {
+        try await performSerialized(context: context) {
             try self.callDecoding(
-                [Anime.Video].self, contract.abi >= 2 ? "get_episode_videos" : "get_video_list",
-                [.bytes(try contract.encoder.encode(anime)), .bytes(try contract.encoder.encode(episode))],
-                abi: contract.abi)
+                [Anime.Video].self, "get_episode_videos",
+                [.bytes(try Self.encoder.encode(anime)), .bytes(try Self.encoder.encode(episode))])
         }
     }
 
@@ -901,13 +869,8 @@ public actor ItoRunner {
     /// acknowledges delivery; false means absent/unsupported. Reported failures throw. Calls may
     /// be retried idempotently.
     public func markCompleted(kind: MediaKind, mediaKey: String, unitKey: String, context: NetworkOperationContext) async throws -> Bool {
-        let contract = self.contract
-        return try await performSerialized(context: context) {
-            if contract.abi >= 2 {
-                return try self.callCompletion("mark_completed", kind: kind, mediaKey: mediaKey, unitKey: unitKey)
-            }
-            let name = kind == .anime ? "mark_episode_watched" : "mark_chapter_read"
-            return try self.callCompletion(name, mediaKey: mediaKey, unitKey: unitKey)
+        try await performSerialized(context: context) {
+            try self.callCompletion(kind: kind, mediaKey: mediaKey, unitKey: unitKey)
         }
     }
 }
@@ -936,22 +899,8 @@ extension HomeComponentValue {
     }
 }
 
-extension MediaPageResult {
-    init(_ page: Manga.PageResult) {
-        self.init(entries: page.entries.map(MediaEntry.manga), hasNextPage: page.hasNextPage)
-    }
-
-    init(_ page: Anime.PageResult) {
-        self.init(entries: page.entries.map(MediaEntry.anime), hasNextPage: page.hasNextPage)
-    }
-
-    init(_ page: Novel.PageResult) {
-        self.init(entries: page.entries.map(MediaEntry.novel), hasNextPage: page.hasNextPage)
-    }
-}
-
 extension MediaEntry {
-    /// This entry with every chapter's kind known, as ABI 2 plugins receive it.
+    /// This entry with every chapter's kind known, as plugins receive it.
     func resolvingChapterKinds() -> MediaEntry {
         func resolved(_ chapters: [Chapter]?, _ kind: MediaKind) -> [Chapter]? {
             chapters?.map { chapter in
@@ -966,6 +915,21 @@ extension MediaEntry {
             return .manga(manga)
         case .novel(var novel):
             novel.chapters = resolved(novel.chapters, .novel)
+            return .novel(novel)
+        case .anime:
+            return self
+        }
+    }
+
+    /// This entry without the catalog describing its chapter list. A plugin that is asked for a
+    /// fresh list never receives the saved one.
+    func withoutCatalog() -> MediaEntry {
+        switch self {
+        case .manga(var manga):
+            manga.catalog = nil
+            return .manga(manga)
+        case .novel(var novel):
+            novel.catalog = nil
             return .novel(novel)
         case .anime:
             return self

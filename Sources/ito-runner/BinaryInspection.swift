@@ -29,7 +29,7 @@ public struct PluginBinaryInterface: Sendable, Equatable {
 
     public init(
         abiVersion: Int, imports: [String], kindsMask: UInt32?, hasStartSection: Bool = false,
-        errorProtocolVersion: UInt32 = 1
+        errorProtocolVersion: UInt32 = 2
     ) {
         self.abiVersion = abiVersion
         self.imports = imports
@@ -40,7 +40,7 @@ public struct PluginBinaryInterface: Sendable, Equatable {
 
     public init(
         abiVersion: Int, imports: [String], kinds: [MediaKind]?, hasStartSection: Bool = false,
-        errorProtocolVersion: UInt32 = 1
+        errorProtocolVersion: UInt32 = 2
     ) {
         self.init(
             abiVersion: abiVersion, imports: imports,
@@ -58,8 +58,8 @@ public enum PluginBinaryCompatibility: Sendable, Equatable {
     case pluginTooNew(abi: Int)
     /// Imports host functions this runner doesn't provide: the host needs an update.
     case missingImports([String])
-    /// A module no host runs: it has a start section, or an ABI 2 or later module without a usable
-    /// `ito_supported_kinds`.
+    /// A module no host runs: it has a start section, a supported-ABI module without a usable
+    /// `ito_supported_kinds`, or one whose `ito_error_version` is below what this runner reads.
     case invalid
 }
 
@@ -164,7 +164,7 @@ extension ItoRunner {
             // The mask is not judged here: whether this runner can use it is `compatibility`'s call,
             // so a plugin newer than the runner is still reported by its ABI.
             var kindsMask: UInt32?
-            if abi >= 2, let function = kindsFunction, let body = kindsBody, hasConstantSignature(function) {
+            if abi >= Self.firstABIWithKinds, let function = kindsFunction, let body = kindsBody, hasConstantSignature(function) {
                 kindsMask = try? constantResult(of: body, export: kindsExportName)
             }
 
@@ -213,9 +213,10 @@ extension ItoRunner {
     static let parsingLimits = ParsingLimits(maxFunctionLocals: 10_000, maxTotalLocals: 250_000)
 
     /// Whether this runner can run a plugin with `binary`: a start section is refused, then its ABI
-    /// is compared with `supported`, then its kinds and imports are checked. An ABI 2 or later
-    /// plugin must name at least one kind this runner knows, and no other, as `loadPlugin`
-    /// requires. Imports are checked by name against the host functions this runner provides, as
+    /// is compared with `supported`, then its kinds, error-report version and imports are checked.
+    /// A plugin of an ABI that has kinds must name at least one kind this runner knows, and no
+    /// other, and its `ito_error_version` must be one this runner reads, as `loadPlugin` requires.
+    /// Imports are checked by name against the host functions this runner provides, as
     /// `unsupportedImports` does; signatures are only compared when the plugin is loaded.
     public static func compatibility(
         of binary: PluginBinaryInterface,
@@ -224,10 +225,14 @@ extension ItoRunner {
         if binary.hasStartSection { return .invalid }
         if binary.abiVersion < supported.lowerBound { return .pluginTooOld(abi: binary.abiVersion) }
         if binary.abiVersion > supported.upperBound { return .pluginTooNew(abi: binary.abiVersion) }
-        if binary.abiVersion >= 2 && binary.kinds == nil { return .invalid }
+        if binary.abiVersion >= firstABIWithKinds && binary.kinds == nil { return .invalid }
+        if binary.errorProtocolVersion < minimumErrorProtocolVersion { return .invalid }
         let missing = unsupportedImports(binary.imports)
         return missing.isEmpty ? .compatible : .missingImports(missing)
     }
+
+    /// The first ABI whose plugins declare their kinds with `ito_supported_kinds`.
+    private static let firstABIWithKinds = 2
 
     private static let abiExportName = "ito_abi_version"
     private static let kindsExportName = "ito_supported_kinds"
