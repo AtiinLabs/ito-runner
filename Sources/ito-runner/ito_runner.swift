@@ -186,7 +186,9 @@ public actor ItoRunner {
             guard case .memory(let memory)? = instance.exports["memory"] else {
                 throw ItoError.wasmTrap("Plugin did not export linear 'memory'.")
             }
-            let errorProtocolVersion = try Self.errorReportVersion(of: instance)
+            // Version 1 encoded Unsupported as an ordinary failure message; version 2 gives it an
+            // explicit category. It was read statically, so learning it runs no plugin code.
+            let errorProtocolVersion = binary.errorProtocolVersion
             let kinds = try Self.supportedKinds(of: instance, abi: abi)
             if abi >= 2, binary.kinds != kinds {
                 throw ItoError.wasmTrap("ito_supported_kinds returned other kinds than the constant it was read as.")
@@ -242,22 +244,6 @@ public actor ItoRunner {
             throw ItoError.wasmTrap("ito_supported_kinds must name the kinds this host knows")
         }
         return MediaKind.allCases.filter { mask & 1 << UInt32($0.wireValue) != 0 }
-    }
-
-    /// Version 1 encoded Unsupported as an ordinary failure message. Version 2 gives it an
-    /// explicit category. A malformed version export must not silently downgrade the protocol.
-    private static func errorReportVersion(of instance: Instance) throws -> UInt32 {
-        guard let exported = instance.exports["ito_error_version"] else { return 1 }
-        guard case .function(let function) = exported,
-              function.type.parameters.isEmpty,
-              function.type.results.count == 1,
-              function.type.results.first == .i32 else {
-            throw ItoError.wasmTrap("ito_error_version must be () -> i32")
-        }
-        guard case .i32(let version)? = try function([]).first, version > 0 else {
-            throw ItoError.wasmTrap("ito_error_version must return a positive version")
-        }
-        return version
     }
 
     /// Loads a packaged `.ito` bundle, extracting the wasm logic and returning the manifest, which

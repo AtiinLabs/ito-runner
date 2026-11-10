@@ -60,10 +60,12 @@ struct BinaryInspectionTests {
             (func (export "other") (result i32) i32.const 9)
             \(abiExport(2))
             \(kindsExport(1))
+            (func (export "ito_error_version") (result i32) i32.const 5)
             """))
 
         #expect(binary.abiVersion == 2)
         #expect(binary.kinds == [.manga])
+        #expect(binary.errorProtocolVersion == 5)
     }
 
     @Test func aBodyThatIsNotASingleConstantIsRefused() throws {
@@ -212,6 +214,30 @@ struct BinaryInspectionTests {
             #"(func (export "ito_abi_version") (param i32) (result i32) i32.const 2)"#,
             #"(func (export "ito_abi_version") (result i64) i64.const 2)"#,
             #"(func (export "ito_abi_version") i32.const 2 drop)"#
+        ]
+        for export in exports {
+            let module = try wasm(export)
+            #expect(throws: ItoError.self, Comment(rawValue: export)) { try ItoRunner.inspectBinary(module) }
+        }
+    }
+
+    @Test func theErrorVersionIsTheConstantTheExportReturnsOr1WithoutIt() throws {
+        let absent = try ItoRunner.inspectBinary(wasm(abiExport(2)))
+        let declared = try ItoRunner.inspectBinary(
+            wasm(#"(func (export "ito_error_version") (result i32) i32.const 2)"#))
+
+        #expect(absent.errorProtocolVersion == 1)
+        #expect(declared.errorProtocolVersion == 2)
+    }
+
+    @Test func anErrorVersionThatIsNotAPositiveDefinedConstantFunctionIsRefused() throws {
+        let exports = [
+            #"(func (export "ito_error_version") (result i32) i32.const 0)"#,
+            #"(func (export "ito_error_version") (result i32) i32.const -1)"#,
+            #"(func (export "ito_error_version") (result i64) i64.const 2)"#,
+            #"(func (export "ito_error_version") (result i32) i32.const 1 i32.const 1 i32.add)"#,
+            #"(import "env" "v" (func $v (result i32))) (export "ito_error_version" (func $v))"#,
+            #"(global (export "ito_error_version") i32 (i32.const 2))"#
         ]
         for export in exports {
             let module = try wasm(export)
@@ -430,6 +456,24 @@ struct BinaryInspectionTests {
             (func (export "ito_supported_kinds") (result i32)
                 (call $print (i32.const 16) (i32.const 3))
                 i32.const 1)
+            """)
+
+        await #expect(throws: ItoError.self) { try await runner.loadPlugin(fromBytes: module) }
+
+        #expect(std.messages.isEmpty)
+    }
+
+    @Test func aNonConstantErrorVersionExportIsRefusedWithoutCallingIt() async throws {
+        let std = RecordingStdModule()
+        let runner = ItoRunner()
+        await runner.setStdModule(std)
+        let module = try wasm("""
+            (import "ito:core/std" "print" (func $print (param i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 16) "ran")
+            (func (export "ito_error_version") (result i32)
+                (call $print (i32.const 16) (i32.const 3))
+                i32.const 2)
             """)
 
         await #expect(throws: ItoError.self) { try await runner.loadPlugin(fromBytes: module) }
