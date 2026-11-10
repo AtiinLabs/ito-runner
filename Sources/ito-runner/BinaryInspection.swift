@@ -91,7 +91,7 @@ extension ItoRunner {
         var hasStartSection = false
 
         do {
-            var parser = Parser(bytes: wasm)
+            var parser = Parser(bytes: wasm, limits: parsingLimits)
             while let payload = try parser.parseNext() {
                 switch payload {
                 case .typeSection(let types):
@@ -205,6 +205,12 @@ extension ItoRunner {
         let binary = (try? bundle.wasm()).flatMap { try? inspectBinary($0) }
         return (manifest, binary)
     }
+
+    /// Bounds the locals a module may declare, which parsing expands into arrays. Real plugins
+    /// declare at most about a hundred per function and several thousand in total, so these leave wide
+    /// headroom while a hostile module can't make parsing allocate gigabytes. Inspection and
+    /// loading use the same limits, so a module that inspects as loadable also parses on load.
+    static let parsingLimits = ParsingLimits(maxFunctionLocals: 10_000, maxTotalLocals: 250_000)
 
     /// Whether this runner can run a plugin with `binary`: a start section is refused, then its ABI
     /// is compared with `supported`, then its kinds and imports are checked. An ABI 2 or later
