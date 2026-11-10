@@ -4,12 +4,11 @@ import WasmKit
 
 /// WasmBridge acts as the FFI layer connecting WasmKit's `Memory` to native Swift protocols
 /// using the Postcard serialization format.
-/// The runner owns its bridge; the bridge does not retain the actor.
-/// Import callbacks retain codecs and use caller memory. Memory utility methods require a live runner.
+/// The runner owns its bridge; the bridge holds no reference to the runner.
+/// Import callbacks retain codecs and use caller memory.
 public class WasmBridge {
 
-    private weak var runner: ItoRunner?
-    /// Host-module payloads have the same layout in every ABI.
+    /// Host-module payloads are laid out for the supported ABI.
     private let postcardEncoder = ItoPostcardEncoder(abiVersion: sharedLayoutABIVersion)
     private let postcardDecoder = ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion)
 
@@ -45,41 +44,7 @@ public class WasmBridge {
             && currentExport == nil && reportedFailure == nil
     }
 
-    public init(runner: ItoRunner) {
-        self.runner = runner
-    }
-
-    /// Reads and decodes a Postcard struct from Wasm memory. Internal: guest memory is only
-    /// touched from the serialized lane, never by hosts directly.
-    func readRequest<T: Decodable>(_ type: T.Type, requestPtr: Int32, requestLen: Int32)
-        async throws -> T {
-        guard let runner else { throw ItoError.wasmTrap("Runner is no longer available") }
-        let bytes = try await runner.readMemory(offset: Int(requestPtr), length: Int(requestLen))
-        return try postcardDecoder.decode(type, from: bytes)
-    }
-
-    /// Encodes a Swift struct to Postcard and writes it to Wasm memory.
-    /// Returns the packed (pointer << 32 | length) response.
-    func writeResponse<T: Encodable>(_ response: T) async throws -> Int64 {
-        guard let runner else { throw ItoError.wasmTrap("Runner is no longer available") }
-        let bytes = try postcardEncoder.encode(response)
-
-        let allocResult = try await runner.executeExport("alloc", args: [.i32(UInt32(bytes.count))])
-        guard let pointerVal = allocResult.first, case .i32(let pointer) = pointerVal else {
-            throw ItoError.wasmTrap("Failed to allocate memory for response")
-        }
-
-        // Write the encoded bytes to the allocated pointer
-        try await runner.writeMemory(offset: Int(pointer), bytes: bytes)
-
-        // Pack pointer and length into Int64
-        let packed = (UInt64(pointer) << 32) | UInt64(UInt32(bytes.count))
-        return Int64(bitPattern: packed)
-    }
-
-    /// What the SDK prints for `Error::Unsupported`. An optional export (`handle_url`, `handle_image`)
-    /// reporting it means "not handled", not a failure.
-    static let unsupportedReason = "Unsupported operation"
+    public init() {}
 
     /// Starts tracking the failure the plugin reports while running `export`.
     func beginCall(_ export: String) {

@@ -43,6 +43,12 @@ public enum ItoError: LocalizedError, Equatable {
 
     case controlContractViolation(function: String, violation: ControlContractViolation)
 
+    /// The plugin's response broke the data contract, as the runner found after decoding it or as
+    /// the plugin reported itself (error category `contractViolation`, from any export).
+    /// `violation.rule` names the rule for diagnostics; the description never contains it, since
+    /// hosts show their own text.
+    case catalogContractViolation(function: String, violation: CatalogContractViolation)
+
     public var isCrash: Bool {
         switch self {
         case .wasmTrap, .memoryOutOfBounds: return true
@@ -61,6 +67,9 @@ public enum ItoError: LocalizedError, Equatable {
             return "Network access is restricted by host policy."
         case .controlContractViolation(let function, let violation):
             return "\(function): invalid controls contract: \(violation)"
+        case .catalogContractViolation(let function, _):
+            // The rule code stays out of the text: it is for diagnostics, not for users.
+            return "\(function): the plugin's response broke the data contract."
         case .wasmTrap(let reason):
             return "Wasm execution trapped: \(reason)"
         case .memoryOutOfBounds(let offset, let length, let memorySize):
@@ -90,6 +99,8 @@ public enum ItoError: LocalizedError, Equatable {
         case (.pluginReloaded, .pluginReloaded): return true
         case (.networkPolicy(let l), .networkPolicy(let r)): return l == r
         case (.controlContractViolation(let lf, let lv), .controlContractViolation(let rf, let rv)):
+            return lf == rf && lv == rv
+        case (.catalogContractViolation(let lf, let lv), .catalogContractViolation(let rf, let rv)):
             return lf == rf && lv == rv
         case (.wasmTrap(let l), .wasmTrap(let r)): return l == r
         case (

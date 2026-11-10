@@ -11,6 +11,7 @@ struct PluginImageRequestTests {
             (module
               (import "ito:core/std" "print" (func $print (param i32 i32)))
               (memory (export "memory") 1)
+              \(abi3Prelude())
               ;; Rust postcard PluginImageRequest { url, Some({"K":"V"}) }
               (data (i32.const 64) "\\0ahttp://x/p\\01\\01\\01K\\01V")
               (data (i32.const 128) "\\01\\08http://x")
@@ -60,9 +61,11 @@ struct PluginImageRequestTests {
     }
 
     @Test func aProviderCanDeclineTheNativePathForAnImageItTransforms() async throws {
+        // {category: unsupported (zigzag 12), message: "Unsupported operation"}
         let runner = try await runner(exports: """
-            (func (export "get_image_request") (param i32 i32) (result i64)
-              i32.const 320 i32.const 49 call $print i64.const 0)
+            (data (i32.const 512) "\\0c\\15Unsupported operation")
+            (func (export "ito_last_error") (result i64) i64.const \((UInt64(512) << 32) | 23))
+            (func (export "get_image_request") (param i32 i32) (result i64) i64.const 0)
             (func (export "get_image_origins") (result i64) i64.const 0)
             """)
         #expect(try await runner.getImageRequest("transformed", context: .test) == nil)
@@ -71,9 +74,9 @@ struct PluginImageRequestTests {
 
     @Test func requestsWithoutHeadersAndWithEmptyHeadersRemainDistinct() throws {
         var bytes: [UInt8] = [10] + Array("http://x/p".utf8) + [0]
-        #expect(try ItoPostcardDecoder(abiVersion: 2).decode(PluginImageRequest.self, from: bytes).headers == nil)
+        #expect(try ItoPostcardDecoder(abiVersion: 3).decode(PluginImageRequest.self, from: bytes).headers == nil)
         bytes[bytes.count - 1] = 1
         bytes.append(0)
-        #expect(try ItoPostcardDecoder(abiVersion: 2).decode(PluginImageRequest.self, from: bytes).headers == [:])
+        #expect(try ItoPostcardDecoder(abiVersion: 3).decode(PluginImageRequest.self, from: bytes).headers == [:])
     }
 }

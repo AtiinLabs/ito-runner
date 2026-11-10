@@ -247,6 +247,9 @@ public enum PluginErrorCategory: Int32, Codable, Sendable, PostcardEnumMarker {
     case unsupported = 6
     /// The service needs the user to sign in on its website.
     case needsLogin = 7
+    /// The plugin's response broke the data contract; its message is a fixed rule code
+    /// (`CatalogContractViolation.Rule`). Never shown to users.
+    case contractViolation = 8
 }
 
 /// The failure a plugin reports through `ito_last_error`.
@@ -261,26 +264,89 @@ public enum ContentRating: Int32, Codable, Sendable, PostcardEnumMarker {
     case Nsfw = 2  // Pornographic
 }
 
-/// A chapter of a manga or novel (`Manga.Chapter`, `Novel.Chapter`).
+/// The scanlation group of a chapter as plugins lay it out: an optional source-scoped identifier
+/// and the display name. `Chapter` flattens it into `scanlator` (the name) and `scanlatorID`.
+struct ScanlatorDescriptor: Codable, Sendable, Equatable {
+    var id: String?
+    var name: String
+}
+
+/// Which chapters a returned list covers. The raw values are the wire format. A value this
+/// runner doesn't know reads as `unknown`, in plugin payloads and in stored JSON alike, so a list
+/// from a later release (or a blob written by one) stays readable.
+public enum CatalogScope: Int32, Codable, Sendable, PostcardEnumMarker {
+    case unknown = 0
+    /// What the source shows by default, which may collapse alternative uploads.
+    case visible = 1
+    /// Every eligible alternative upload is listed.
+    case allEligible = 2
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(Int32.self)
+        self = Self(rawValue: raw) ?? .unknown
+    }
+}
+
+/// Whether a chapter list holds everything within its `CatalogScope`, for the signed-in account
+/// and the source settings in effect. A value this runner doesn't know reads as `unknown`.
+public enum CatalogCompleteness: Int32, Codable, Sendable, PostcardEnumMarker {
+    case unknown = 0
+    case partial = 1
+    case complete = 2
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(Int32.self)
+        self = Self(rawValue: raw) ?? .unknown
+    }
+}
+
+/// What an entry's chapter list covers. An entry without one has an unknown scope and
+/// completeness. A catalog requires the entry's `chapters`.
+public struct ChapterCatalog: Codable, Sendable, Equatable {
+    public var scope: CatalogScope
+    public var completeness: CatalogCompleteness
+
+    public init(scope: CatalogScope = .unknown, completeness: CatalogCompleteness = .unknown) {
+        self.scope = scope
+        self.completeness = completeness
+    }
+}
+
+/// A chapter of a manga or novel (`Manga.Chapter`, `Novel.Chapter`): one exact upload.
 public struct Chapter: Codable, Sendable, Identifiable {
     public var id: String { key }
+    /// Identifies this exact upload within its entry.
     public var key: String
     public var title: String?
-    public var volume: Float32?
-    public var chapter: Float32?
-    public var dateUpdated: Double?  // Option<f64>
+    public var volume: Double?
+    public var chapter: Double?
+    /// When the upload was published, in seconds since 1970-01-01 UTC.
+    public var dateUpdated: Double?
+    /// The scanlation group's display name.
     public var scanlator: String?
+    /// A stable identifier of the group within the source, when the source has one. Only
+    /// meaningful with a `scanlator` name.
+    public var scanlatorID: String?
     public var url: String?
     public var lang: String?
+    /// Locked for the signed-in account or session. Nil means unknown.
     public var paywalled: Bool?
-    /// How the chapter is read. Nil when its plugin predates per-chapter kinds (ABI 1) or it was
-    /// stored before them; it is then read as its entry's kind says (`MediaKind.defaultContentKind`).
+    /// How the chapter is read. Nil only when it was stored before per-chapter kinds; it is then
+    /// read as its entry's kind says (`MediaKind.defaultContentKind`).
     public var kind: ContentKind?
+    /// Shared by every upload of one entry that the source declares to be the same reading position.
+    public var logicalUnitID: String?
+    /// Orders reading positions within one response: lower is read earlier, equal values mean the
+    /// same position. Not durable across refreshes.
+    public var readingOrder: Int64?
+    /// A token that changes exactly when the upload's content changes.
+    public var revision: String?
 
     public init(
-        key: String, title: String? = nil, volume: Float32? = nil, chapter: Float32? = nil,
-        dateUpdated: Double? = nil, scanlator: String? = nil, url: String? = nil,
-        lang: String? = nil, paywalled: Bool? = nil, kind: ContentKind? = nil
+        key: String, title: String? = nil, volume: Double? = nil, chapter: Double? = nil,
+        dateUpdated: Double? = nil, scanlator: String? = nil, scanlatorID: String? = nil,
+        url: String? = nil, lang: String? = nil, paywalled: Bool? = nil, kind: ContentKind? = nil,
+        logicalUnitID: String? = nil, readingOrder: Int64? = nil, revision: String? = nil
     ) {
         self.key = key
         self.title = title
@@ -288,66 +354,98 @@ public struct Chapter: Codable, Sendable, Identifiable {
         self.chapter = chapter
         self.dateUpdated = dateUpdated
         self.scanlator = scanlator
+        self.scanlatorID = scanlatorID
         self.url = url
         self.lang = lang
         self.paywalled = paywalled
         self.kind = kind
+        self.logicalUnitID = logicalUnitID
+        self.readingOrder = readingOrder
+        self.revision = revision
     }
 
     enum CodingKeys: String, CodingKey {
-        case key, title, volume, chapter, dateUpdated, scanlator, url, lang, paywalled, kind
+        case key, title, volume, chapter, dateUpdated, scanlator, scanlatorID = "scanlatorId", url, lang
+        case paywalled, kind, logicalUnitID = "logicalUnitId", readingOrder, revision
     }
 
-    // ABI 1 plugins lay a chapter out without its kind; ABI 2 always ends it with one. Other
-    // formats (JSON) carry the kind when it is known.
+    /// The only plugin ABI with a chapter layout.
+    private static let wireABI = 3
+
+    // Plugins lay a chapter out as the ABI 3 SDK does: the scanlator is an optional descriptor, the
+    // kind is always present and the three fields after it are optional. Other formats (JSON)
+    // keep the scanlator's name under `scanlator`, carry the kind when it is known, and treat
+    // every key added since the first stored blobs as optional, so older blobs still decode.
     public init(from decoder: Decoder) throws {
+        let abi = decoder.userInfo[postcardABIVersionKey] as? Int
+        if let abi, abi != Self.wireABI { throw ItoError.postcardDecodingError("A chapter has no layout for ABI \(abi)") }
+        let isWire = abi != nil
         let container = try decoder.container(keyedBy: CodingKeys.self)
         key = try container.decode(String.self, forKey: .key)
         title = try container.decodeIfPresent(String.self, forKey: .title)
-        volume = try container.decodeIfPresent(Float32.self, forKey: .volume)
-        chapter = try container.decodeIfPresent(Float32.self, forKey: .chapter)
+        volume = try container.decodeIfPresent(Double.self, forKey: .volume)
+        chapter = try container.decodeIfPresent(Double.self, forKey: .chapter)
         dateUpdated = try container.decodeIfPresent(Double.self, forKey: .dateUpdated)
-        scanlator = try container.decodeIfPresent(String.self, forKey: .scanlator)
+        if isWire {
+            let descriptor = try container.decodeIfPresent(ScanlatorDescriptor.self, forKey: .scanlator)
+            scanlator = descriptor?.name
+            scanlatorID = descriptor?.id
+        } else {
+            scanlator = try container.decodeIfPresent(String.self, forKey: .scanlator)
+            scanlatorID = try container.decodeIfPresent(String.self, forKey: .scanlatorID)
+        }
         url = try container.decodeIfPresent(String.self, forKey: .url)
         lang = try container.decodeIfPresent(String.self, forKey: .lang)
         paywalled = try container.decodeIfPresent(Bool.self, forKey: .paywalled)
-        switch decoder.userInfo[postcardABIVersionKey] as? Int {
-        case 1?: kind = nil
-        case 2?:
+        if isWire {
             let value = try container.decode(Int32.self, forKey: .kind)
             guard let decoded = ContentKind(wireValue: value) else {
-                throw ItoError.postcardDecodingError("Unknown chapter kind \(value)")
+                throw CatalogContractViolation(.enumUnknown)
             }
             kind = decoded
-        case nil: kind = try container.decodeIfPresent(ContentKind.self, forKey: .kind)
-        case let abi?: throw ItoError.postcardDecodingError("A chapter has no layout for ABI \(abi)")
+        } else {
+            kind = try container.decodeIfPresent(ContentKind.self, forKey: .kind)
         }
+        logicalUnitID = try container.decodeIfPresent(String.self, forKey: .logicalUnitID)
+        readingOrder = try container.decodeIfPresent(Int64.self, forKey: .readingOrder)
+        revision = try container.decodeIfPresent(String.self, forKey: .revision)
     }
 
     public func encode(to encoder: Encoder) throws {
+        let abi = encoder.userInfo[postcardABIVersionKey] as? Int
+        if let abi, abi != Self.wireABI { throw ItoError.postcardEncodingError("A chapter has no layout for ABI \(abi)") }
+        let isWire = abi != nil
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(key, forKey: .key)
         try container.encodeIfPresent(title, forKey: .title)
         try container.encodeIfPresent(volume, forKey: .volume)
         try container.encodeIfPresent(chapter, forKey: .chapter)
         try container.encodeIfPresent(dateUpdated, forKey: .dateUpdated)
-        try container.encodeIfPresent(scanlator, forKey: .scanlator)
+        if isWire {
+            if scanlator == nil, scanlatorID != nil {
+                throw ItoError.postcardEncodingError("A chapter has a scanlator identifier but no scanlator name.")
+            }
+            let descriptor = scanlator.map { ScanlatorDescriptor(id: scanlatorID, name: $0) }
+            try container.encodeIfPresent(descriptor, forKey: .scanlator)
+        } else {
+            try container.encodeIfPresent(scanlator, forKey: .scanlator)
+            try container.encodeIfPresent(scanlatorID, forKey: .scanlatorID)
+        }
         try container.encodeIfPresent(url, forKey: .url)
         try container.encodeIfPresent(lang, forKey: .lang)
         try container.encodeIfPresent(paywalled, forKey: .paywalled)
-        switch encoder.userInfo[postcardABIVersionKey] as? Int {
-        case 1?:
-            break
-        case 2?:
-            // The runner resolves unknown kinds before sending a chapter to an ABI 2 plugin.
+        if isWire {
+            // The runner resolves unknown kinds before sending a chapter to a plugin.
             guard let kind else {
                 throw ItoError.postcardEncodingError("A chapter sent to the plugin has no kind.")
             }
             try container.encode(kind.wireValue, forKey: .kind)
-        case nil:
+        } else {
             try container.encodeIfPresent(kind, forKey: .kind)
-        case let abi?: throw ItoError.postcardEncodingError("A chapter has no layout for ABI \(abi)")
         }
+        try container.encodeIfPresent(logicalUnitID, forKey: .logicalUnitID)
+        try container.encodeIfPresent(readingOrder, forKey: .readingOrder)
+        try container.encodeIfPresent(revision, forKey: .revision)
     }
 }
 
@@ -370,16 +468,6 @@ public struct Manga: Codable, Sendable, Identifiable {
         case Webtoon = 4
     }
 
-    public struct PageResult: Codable, Sendable {
-        public var entries: [Manga]
-        public var hasNextPage: Bool
-
-        public init(entries: [Manga], hasNextPage: Bool) {
-            self.entries = entries
-            self.hasNextPage = hasNextPage
-        }
-    }
-
     public typealias Chapter = ito_runner.Chapter
 
     public var key: String
@@ -395,12 +483,14 @@ public struct Manga: Codable, Sendable, Identifiable {
     public var nsfw: Int32
     public var viewer: Viewer
     public var chapters: [Chapter]?
+    /// What `chapters` covers. Nil means unknown, and it is nil when `chapters` is.
+    public var catalog: ChapterCatalog?
 
     public init(
         key: String, title: String, authors: [String]? = nil, artist: String? = nil,
         description: String? = nil, tags: [String]? = nil, cover: String? = nil, url: String? = nil,
         status: Status = .Unknown, contentRating: ContentRating = .Safe, nsfw: Int32 = 0,
-        viewer: Viewer = .Default, chapters: [Chapter]? = nil
+        viewer: Viewer = .Default, chapters: [Chapter]? = nil, catalog: ChapterCatalog? = nil
     ) {
         self.key = key
         self.title = title
@@ -415,6 +505,7 @@ public struct Manga: Codable, Sendable, Identifiable {
         self.nsfw = nsfw
         self.viewer = viewer
         self.chapters = chapters
+        self.catalog = catalog
     }
 }
 
@@ -427,16 +518,6 @@ public struct Novel: Codable, Sendable, Identifiable {
         case Completed = 2
         case Cancelled = 3
         case Hiatus = 4
-    }
-
-    public struct PageResult: Codable, Sendable {
-        public var entries: [Novel]
-        public var hasNextPage: Bool
-
-        public init(entries: [Novel], hasNextPage: Bool) {
-            self.entries = entries
-            self.hasNextPage = hasNextPage
-        }
     }
 
     public typealias Chapter = ito_runner.Chapter
@@ -453,12 +534,14 @@ public struct Novel: Codable, Sendable, Identifiable {
     public var contentRating: ContentRating
     public var nsfw: Int32
     public var chapters: [Chapter]?
+    /// What `chapters` covers. Nil means unknown, and it is nil when `chapters` is.
+    public var catalog: ChapterCatalog?
 
     public init(
         key: String, title: String, authors: [String]? = nil, artist: String? = nil,
         description: String? = nil, tags: [String]? = nil, cover: String? = nil, url: String? = nil,
         status: Status = .Unknown, contentRating: ContentRating = .Safe, nsfw: Int32 = 0,
-        chapters: [Chapter]? = nil
+        chapters: [Chapter]? = nil, catalog: ChapterCatalog? = nil
     ) {
         self.key = key
         self.title = title
@@ -472,6 +555,7 @@ public struct Novel: Codable, Sendable, Identifiable {
         self.contentRating = contentRating
         self.nsfw = nsfw
         self.chapters = chapters
+        self.catalog = catalog
     }
 }
 
@@ -685,16 +769,6 @@ public struct Anime: Codable, Sendable, Identifiable {
             self.key = key
             self.title = title
             self.isCurrent = isCurrent
-        }
-    }
-
-    public struct PageResult: Codable, Sendable {
-        public var entries: [Anime]
-        public var hasNextPage: Bool
-
-        public init(entries: [Anime], hasNextPage: Bool) {
-            self.entries = entries
-            self.hasNextPage = hasNextPage
         }
     }
 

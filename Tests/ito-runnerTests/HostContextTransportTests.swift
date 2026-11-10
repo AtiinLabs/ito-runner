@@ -87,7 +87,7 @@ struct HostContextTransportTests {
         if let net { await runner.setNetModule(net) }
         if let webview { await runner.setWebviewModule(webview) }
         await runner.setHostCallTimeouts(timeouts)
-        try await runner.loadPlugin(fromBytes: wat2wasm("(module (memory (export \"memory\") 1))"))
+        try await runner.loadPlugin(fromBytes: wat2wasm("(module (memory (export \"memory\") 1) \(abi3Prelude()))"))
         return runner
     }
 

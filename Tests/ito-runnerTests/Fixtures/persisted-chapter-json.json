@@ -1,0 +1,58 @@
+{
+  "contract": "ito-persisted-json",
+  "version": 1,
+  "notes": [
+    "Legacy JSON blobs as Ito stores runner Codable values (library payloads and offline snapshots), captured from the ito-runner Codable models at f80d183 (ABI 1 and ABI 2 era) with a default JSONEncoder and sorted keys.",
+    "json is the exact stored text. Every blob must keep decoding under the current models, and re-encoding what was decoded must not change what an older reader sees."
+  ],
+  "blobs": [
+    {
+      "name": "chapter.abi1_era",
+      "type": "Chapter",
+      "describes": "ABI 1 era: no kind, Float-encoded numbers, scanlator as a plain string",
+      "json": "{\"chapter\":12.5,\"dateUpdated\":1700000000,\"key\":\"c-1\",\"lang\":\"en\",\"paywalled\":false,\"scanlator\":\"Alpha Scans\",\"title\":\"One\",\"url\":\"https:\\/\\/example.test\\/c\\/1\",\"volume\":2}"
+    },
+    {
+      "name": "chapter.abi2_era",
+      "type": "Chapter",
+      "describes": "ABI 2 era: kind stored by name, nil fields omitted; the number 10.1 was a Float",
+      "json": "{\"chapter\":10.1,\"dateUpdated\":1700000100.5,\"key\":\"c-2\",\"kind\":\"text\",\"title\":\"Two\"}"
+    },
+    {
+      "name": "chapter.minimal",
+      "type": "Chapter",
+      "describes": "only the key; every optional field was nil",
+      "json": "{\"key\":\"c-3\"}"
+    },
+    {
+      "name": "chapter.float_numbers",
+      "type": "Chapter",
+      "describes": "numbers that are not exact in binary floating point",
+      "json": "{\"chapter\":0.1,\"key\":\"c-4\",\"kind\":\"images\",\"volume\":1.1}"
+    },
+    {
+      "name": "manga.with_chapters",
+      "type": "Manga",
+      "describes": "ABI 2 era Manga with a chapter, as the library stores it",
+      "json": "{\"authors\":[\"A\"],\"chapters\":[{\"chapter\":1,\"key\":\"c-1\",\"kind\":\"images\",\"scanlator\":\"G\"}],\"contentRating\":0,\"cover\":\"https:\\/\\/example.test\\/cover.jpg\",\"description\":\"D\",\"key\":\"m\",\"nsfw\":0,\"status\":1,\"tags\":[\"t\"],\"title\":\"M\",\"url\":\"https:\\/\\/example.test\\/m\",\"viewer\":1}"
+    },
+    {
+      "name": "novel.with_chapters",
+      "type": "Novel",
+      "describes": "ABI 2 era Novel with a text chapter",
+      "json": "{\"chapters\":[{\"chapter\":9,\"key\":\"c-9\",\"kind\":\"text\",\"title\":\"Nine\"}],\"contentRating\":1,\"key\":\"n\",\"nsfw\":1,\"status\":2,\"title\":\"N\"}"
+    },
+    {
+      "name": "anime.with_episodes",
+      "type": "Anime",
+      "describes": "Anime with an episode; its layout does not change in ABI 3",
+      "json": "{\"contentRating\":0,\"episodes\":[{\"dateUpdated\":1700000000,\"episode\":1.5,\"key\":\"e-1\",\"lang\":\"ja\",\"title\":\"Pilot\"}],\"key\":\"a\",\"nsfw\":0,\"status\":1,\"studios\":[\"S\"],\"title\":\"A\"}"
+    },
+    {
+      "name": "manga.without_chapters",
+      "type": "Manga",
+      "describes": "a Manga that was stored without chapters",
+      "json": "{\"contentRating\":0,\"key\":\"m2\",\"nsfw\":0,\"status\":0,\"title\":\"M2\",\"viewer\":0}"
+    }
+  ]
+}

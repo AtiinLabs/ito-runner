@@ -26,6 +26,10 @@ private func kindsExport(_ mask: Int) -> String {
     #"(func (export "ito_supported_kinds") (result i32) i32.const \#(mask))"#
 }
 
+private func errorExport(_ version: Int) -> String {
+    #"(func (export "ito_error_version") (result i32) i32.const \#(version))"#
+}
+
 @Suite("Static binary inspection")
 struct BinaryInspectionTests {
 
@@ -34,7 +38,7 @@ struct BinaryInspectionTests {
     @Test func aModuleWithoutTheABIExportIsABI1() throws {
         let binary = try ItoRunner.inspectBinary(wasm(#"(func (export "get_home") (result i64) i64.const 0)"#))
 
-        #expect(binary == PluginBinaryInterface(abiVersion: 1, imports: [], kinds: nil))
+        #expect(binary == PluginBinaryInterface(abiVersion: 1, imports: [], kinds: nil, errorProtocolVersion: 1))
     }
 
     @Test(arguments: [0, 1, 2, 3, 7])
@@ -92,13 +96,14 @@ struct BinaryInspectionTests {
 
     @Test func aNonConstantKindsExportLeavesTheMaskUnreadWithoutRefusingTheFile() throws {
         let module = try wasm("""
-            \(abiExport(2))
+            \(abiExport(3))
+            \(errorExport(2))
             (func (export "ito_supported_kinds") (result i32) i32.const 1 i32.const 1 i32.or)
             """)
 
         let binary = try ItoRunner.inspectBinary(module)
 
-        #expect(binary.abiVersion == 2)
+        #expect(binary.abiVersion == 3)
         #expect(binary.kindsMask == nil)
         #expect(ItoRunner.compatibility(of: binary) == .invalid)
     }
@@ -160,34 +165,34 @@ struct BinaryInspectionTests {
 
     @Test(arguments: [0, 8, 9, 255])
     func aMaskNamingNoKindOrAnUnknownOneIsKeptRawAndMakesAnInRangeFileInvalid(mask: Int) throws {
-        let abi2 = try ItoRunner.inspectBinary(wasm(abiExport(2) + kindsExport(mask)))
-        let abi3 = try ItoRunner.inspectBinary(wasm(abiExport(3) + kindsExport(mask)))
+        let abi2 = try ItoRunner.inspectBinary(wasm(abiExport(2) + kindsExport(mask) + errorExport(2)))
+        let abi3 = try ItoRunner.inspectBinary(wasm(abiExport(3) + kindsExport(mask) + errorExport(2)))
 
         #expect(abi2.kindsMask == UInt32(mask))
         #expect(abi2.kinds == nil)
-        #expect(ItoRunner.compatibility(of: abi2) == .invalid)
-        #expect(ItoRunner.compatibility(of: abi3, supported: 1...3) == .invalid)
-        #expect(ItoRunner.compatibility(of: abi3) == .pluginTooNew(abi: 3))
+        #expect(ItoRunner.compatibility(of: abi2, supported: 1...3) == .invalid)
+        #expect(ItoRunner.compatibility(of: abi3) == .invalid)
+        #expect(ItoRunner.compatibility(of: abi2) == .pluginTooOld(abi: 2))
     }
 
     @Test func aNewerPluginIsJudgedByItsKindsOnlyOnceTheRangeCoversIt() throws {
-        let binary = try ItoRunner.inspectBinary(wasm(abiExport(3) + kindsExport(1)))
+        let binary = try ItoRunner.inspectBinary(wasm(abiExport(4) + kindsExport(1) + errorExport(2)))
 
-        #expect(ItoRunner.compatibility(of: binary, supported: 1...3) == .compatible)
-        #expect(ItoRunner.compatibility(of: binary) == .pluginTooNew(abi: 3))
+        #expect(ItoRunner.compatibility(of: binary, supported: 3...4) == .compatible)
+        #expect(ItoRunner.compatibility(of: binary) == .pluginTooNew(abi: 4))
     }
 
     @Test func aNewerPluginIsReportedByItsABIWhateverItsKindsExportHolds() async throws {
-        let unknownBit = try wasm(abiExport(3) + kindsExport(8))
-        let nonConstant = try wasm(abiExport(3)
+        let unknownBit = try wasm(abiExport(4) + kindsExport(8))
+        let nonConstant = try wasm(abiExport(4)
             + #"(func (export "ito_supported_kinds") (result i32) i32.const 1 i32.const 1 i32.or)"#)
 
         for module in [unknownBit, nonConstant] {
             let binary = try ItoRunner.inspectBinary(module)
-            #expect(binary.abiVersion == 3)
+            #expect(binary.abiVersion == 4)
             #expect(binary.kinds == nil)
-            #expect(ItoRunner.compatibility(of: binary) == .pluginTooNew(abi: 3))
-            await #expect(throws: ItoError.unsupportedABI(version: 3, supported: 1...2)) {
+            #expect(ItoRunner.compatibility(of: binary) == .pluginTooNew(abi: 4))
+            await #expect(throws: ItoError.unsupportedABI(version: 4, supported: 3...3)) {
                 try await ItoRunner().loadPlugin(fromBytes: module)
             }
         }
@@ -203,7 +208,7 @@ struct BinaryInspectionTests {
             #"(import "env" "kinds" (func $kinds (result i32))) (export "ito_supported_kinds" (func $kinds))"#
         ]
         for export in unusable {
-            let binary = try ItoRunner.inspectBinary(wasm(export + abiExport(2)))
+            let binary = try ItoRunner.inspectBinary(wasm(export + abiExport(3) + errorExport(2)))
             #expect(binary.kinds == nil, Comment(rawValue: export))
             #expect(ItoRunner.compatibility(of: binary) == .invalid, Comment(rawValue: export))
         }
@@ -273,14 +278,15 @@ struct BinaryInspectionTests {
 
     // MARK: Compatibility
 
-    /// An interface as `inspectBinary` reports one that `loadPlugin` could run: ABI 2 and later
-    /// name their kinds.
+    /// An interface as `inspectBinary` reports one that `loadPlugin` could run: from ABI 2 on a
+    /// module names its kinds, and it declares the error-report version the runner reads.
     private func interface(
-        _ abi: Int, imports: [String] = [], kinds: [MediaKind]? = nil, hasStartSection: Bool = false
+        _ abi: Int, imports: [String] = [], kinds: [MediaKind]? = nil, hasStartSection: Bool = false,
+        errorProtocolVersion: UInt32 = 2
     ) -> PluginBinaryInterface {
         PluginBinaryInterface(
             abiVersion: abi, imports: imports, kinds: kinds ?? (abi >= 2 ? [.manga] : nil),
-            hasStartSection: hasStartSection)
+            hasStartSection: hasStartSection, errorProtocolVersion: errorProtocolVersion)
     }
 
     @Test func theABIRangeIsInclusiveAndDirectionIsPreserved() {
@@ -299,33 +305,34 @@ struct BinaryInspectionTests {
         #expect(compatibility(4, 3...3) == .pluginTooNew(abi: 4))
     }
 
-    @Test func theDefaultRangeIsWhatTheRunnerSupports() {
-        #expect(ItoRunner.supportedABIVersions == 1...2)
-        for abi in ItoRunner.supportedABIVersions {
-            #expect(ItoRunner.compatibility(of: interface(abi)) == .compatible)
+    @Test func theDefaultRangeIsABI3Only() {
+        #expect(ItoRunner.supportedABIVersions == 3...3)
+        #expect(ItoRunner.compatibility(of: interface(3)) == .compatible)
+        // Absent (read as 1), 1, 2 and 4 are each refused, with the direction kept.
+        for abi in [0, 1, 2] {
+            #expect(ItoRunner.compatibility(of: interface(abi)) == .pluginTooOld(abi: abi))
         }
-        #expect(ItoRunner.compatibility(of: interface(3)) == .pluginTooNew(abi: 3))
-        #expect(ItoRunner.compatibility(of: interface(0)) == .pluginTooOld(abi: 0))
+        #expect(ItoRunner.compatibility(of: interface(4)) == .pluginTooNew(abi: 4))
     }
 
-    @Test func theLayoutABIOfSharedPayloadsIsOneTheRunnerSupports() {
-        #expect(ItoRunner.supportedABIVersions.contains(sharedLayoutABIVersion))
+    @Test func theLayoutABIOfSharedPayloadsIsTheOneABIThatRuns() {
+        #expect(ItoRunner.supportedABIVersions == sharedLayoutABIVersion...sharedLayoutABIVersion)
     }
 
     @Test func importsTheRunnerLacksAreNamedOnceAndHostFunctionsAreAccepted() {
         let missing = interface(
-            2, imports: ["ito:core/net.fetch_v2", "ito:core/net.fetch_v9", "ito:core/std.print", "wasi.fd_write"])
+            3, imports: ["ito:core/net.fetch_v2", "ito:core/net.fetch_v9", "ito:core/std.print", "wasi.fd_write"])
 
         #expect(ItoRunner.compatibility(of: missing) == .missingImports(["ito:core/net.fetch_v9", "wasi.fd_write"]))
-        #expect(ItoRunner.compatibility(of: interface(2, imports: ["ito:core/net.fetch_v2", "ito:core/std.print"]))
+        #expect(ItoRunner.compatibility(of: interface(3, imports: ["ito:core/net.fetch_v2", "ito:core/std.print"]))
             == .compatible)
     }
 
     @Test func aNewerABIIsReportedBeforeMissingImports() {
-        let binary = interface(3, imports: ["ito:core/net.fetch_v9"])
+        let binary = interface(4, imports: ["ito:core/net.fetch_v9"])
 
-        #expect(ItoRunner.compatibility(of: binary) == .pluginTooNew(abi: 3))
-        #expect(ItoRunner.compatibility(of: binary, supported: 1...3) == .missingImports(["ito:core/net.fetch_v9"]))
+        #expect(ItoRunner.compatibility(of: binary) == .pluginTooNew(abi: 4))
+        #expect(ItoRunner.compatibility(of: binary, supported: 3...4) == .missingImports(["ito:core/net.fetch_v9"]))
     }
 
     @Test func aStartSectionIsInvalidWhateverTheABI() {
@@ -335,17 +342,29 @@ struct BinaryInspectionTests {
         }
     }
 
+    @Test func anErrorReportVersionBelow2IsInvalidAfterTheDirectionChecks() throws {
+        #expect(ItoRunner.compatibility(of: interface(3, errorProtocolVersion: 1)) == .invalid)
+        #expect(ItoRunner.compatibility(of: interface(3, errorProtocolVersion: 2)) == .compatible)
+        #expect(ItoRunner.compatibility(of: interface(3, errorProtocolVersion: 3)) == .compatible)
+        #expect(ItoRunner.compatibility(of: interface(4, errorProtocolVersion: 1)) == .pluginTooNew(abi: 4))
+        // A module that lacks the export reads as version 1.
+        let absent = try ItoRunner.inspectBinary(wasm(abiExport(3) + kindsExport(1)))
+        let declared = try ItoRunner.inspectBinary(wasm(abiExport(3) + kindsExport(1) + errorExport(2)))
+        #expect(ItoRunner.compatibility(of: absent) == .invalid)
+        #expect(ItoRunner.compatibility(of: declared) == .compatible)
+    }
+
     @Test func fromABI2AModuleWithoutReadableKindsIsInvalidAfterTheDirectionChecks() throws {
-        let withoutKinds = try ItoRunner.inspectBinary(wasm(abiExport(2)))
-        let withKinds = try ItoRunner.inspectBinary(wasm(abiExport(2) + kindsExport(1)))
+        let withoutKinds = try ItoRunner.inspectBinary(wasm(abiExport(3) + errorExport(2)))
+        let withKinds = try ItoRunner.inspectBinary(wasm(abiExport(3) + kindsExport(1) + errorExport(2)))
         let abi1 = try ItoRunner.inspectBinary(wasm(abiExport(1)))
 
         #expect(ItoRunner.compatibility(of: withoutKinds) == .invalid)
         #expect(ItoRunner.compatibility(of: withKinds) == .compatible)
-        #expect(ItoRunner.compatibility(of: abi1) == .compatible)
+        #expect(ItoRunner.compatibility(of: abi1) == .pluginTooOld(abi: 1))
         // The direction is reported first when the runner doesn't support the plugin's ABI.
-        #expect(ItoRunner.compatibility(of: withoutKinds, supported: 3...3) == .pluginTooOld(abi: 2))
-        #expect(ItoRunner.compatibility(of: withoutKinds, supported: 1...1) == .pluginTooNew(abi: 2))
+        #expect(ItoRunner.compatibility(of: withoutKinds, supported: 4...4) == .pluginTooOld(abi: 3))
+        #expect(ItoRunner.compatibility(of: withoutKinds, supported: 1...2) == .pluginTooNew(abi: 3))
     }
 
     // MARK: Loading
@@ -366,7 +385,7 @@ struct BinaryInspectionTests {
         await runner.setStdModule(std)
 
         await #expect(throws: ItoError.self) {
-            try await runner.loadPlugin(fromBytes: wasm(Self.printingPlugin + "\n(start $init)"))
+            try await runner.loadPlugin(fromBytes: wasm(Self.printingPlugin + abi3Prelude() + "\n(start $init)"))
         }
 
         #expect(std.messages.isEmpty)
@@ -375,7 +394,7 @@ struct BinaryInspectionTests {
     /// Without this the refusal above could pass because the start function never runs at all.
     @Test func theSameStartFunctionRunsWhenTheModuleIsInstantiatedDirectly() throws {
         let std = RecordingStdModule()
-        let bridge = WasmBridge(runner: ItoRunner())
+        let bridge = WasmBridge()
         bridge.stdModule = std
         let store = Store(engine: Engine())
         let module = try parseWasm(bytes: wasm(Self.printingPlugin + "\n(start $init)"))
@@ -391,7 +410,7 @@ struct BinaryInspectionTests {
         let runner = ItoRunner()
         await runner.setStdModule(std)
 
-        try await runner.loadPlugin(fromBytes: wasm(Self.printingPlugin))
+        try await runner.loadPlugin(fromBytes: wasm(Self.printingPlugin + abi3Prelude()))
         #expect(std.messages.isEmpty)
 
         _ = try await runner.executeExport("run", args: [])
@@ -400,13 +419,13 @@ struct BinaryInspectionTests {
 
     @Test func aRefusedPluginLeavesThePreviouslyLoadedOneInPlace() async throws {
         let runner = ItoRunner()
-        try await runner.loadPlugin(fromBytes: wasm(Self.printingPlugin + abiExport(2) + kindsExport(4)))
+        try await runner.loadPlugin(fromBytes: wasm(Self.printingPlugin + abi3Prelude(kinds: 4)))
 
         await #expect(throws: ItoError.self) {
-            try await runner.loadPlugin(fromBytes: wasm(Self.printingPlugin + "\n(start $init)"))
+            try await runner.loadPlugin(fromBytes: wasm(Self.printingPlugin + abi3Prelude() + "\n(start $init)"))
         }
 
-        #expect(await runner.abiVersion == 2)
+        #expect(await runner.abiVersion == 3)
         #expect(await runner.supportedKinds == [.novel])
     }
 
@@ -414,16 +433,77 @@ struct BinaryInspectionTests {
         let newer = try wasm("""
             (import "ito:core/net" "fetch_v9" (func))
             (memory (export "memory") 1)
-            \(abiExport(3))
+            \(abiExport(4))
             """)
         let older = try wasm("(memory (export \"memory\") 1)\n\(abiExport(0))")
 
-        await #expect(throws: ItoError.unsupportedABI(version: 3, supported: 1...2)) {
+        await #expect(throws: ItoError.unsupportedABI(version: 4, supported: 3...3)) {
             try await ItoRunner().loadPlugin(fromBytes: newer)
         }
-        await #expect(throws: ItoError.unsupportedABI(version: 0, supported: 1...2)) {
+        await #expect(throws: ItoError.unsupportedABI(version: 0, supported: 3...3)) {
             try await ItoRunner().loadPlugin(fromBytes: older)
         }
+    }
+
+    /// The plugin would run code if it were instantiated: its export prints. Refusing it for its
+    /// ABI, whether it declares one or not, happens before that.
+    @Test(arguments: [nil, 1, 2, 4] as [Int?])
+    func everyABIButThreeIsRefusedBeforeAnyPluginCodeRuns(_ abi: Int?) async throws {
+        let std = RecordingStdModule()
+        let runner = ItoRunner()
+        await runner.setStdModule(std)
+        let module = try wasm("""
+            (import "ito:core/std" "print" (func $print (param i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 16) "ran")
+            \(abi.map { abiExport($0) } ?? "")
+            \(kindsExport(1))
+            \(errorExport(2))
+            (func (export "get_home") (result i64) (call $print (i32.const 16) (i32.const 3)) i64.const 0)
+            """)
+
+        await #expect(throws: ItoError.unsupportedABI(version: abi ?? 1, supported: 3...3)) {
+            try await runner.loadPlugin(fromBytes: module)
+        }
+
+        #expect(std.messages.isEmpty)
+        #expect(await runner.abiVersion == 0, "nothing was loaded")
+    }
+
+    @Test(arguments: [nil, 1] as [Int?])
+    func anErrorReportVersionBelowTwoIsRefusedBeforeAnyPluginCodeRuns(_ version: Int?) async throws {
+        func module(errorVersion: String) throws -> [UInt8] {
+            try wasm("""
+                (import "ito:core/std" "print" (func $print (param i32 i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 16) "ran")
+                \(abiExport(3))
+                \(kindsExport(1))
+                \(errorVersion)
+                (func (export "get_home") (result i64) (call $print (i32.const 16) (i32.const 3)) i64.const 0)
+                """)
+        }
+        // The same module loads once it declares version 2, so the version alone is what refuses it.
+        let control = ItoRunner()
+        try await control.loadPlugin(fromBytes: module(errorVersion: errorExport(2)))
+        #expect(await control.abiVersion == 3)
+
+        let std = RecordingStdModule()
+        let runner = ItoRunner()
+        await runner.setStdModule(std)
+        await #expect(throws: ItoError.wasmTrap(
+            "ito_error_version must be at least 2: the plugin reports failures in a format this host no longer reads."
+        )) { try await runner.loadPlugin(fromBytes: module(errorVersion: version.map { errorExport($0) } ?? "")) }
+
+        #expect(std.messages.isEmpty)
+        #expect(await runner.abiVersion == 0, "nothing was loaded")
+    }
+
+    @Test func laterErrorReportVersionsLoad() async throws {
+        let runner = ItoRunner()
+        try await runner.loadPlugin(fromBytes: wasm(
+            #"(memory (export "memory") 1)"# + abiExport(3) + kindsExport(1) + errorExport(7)))
+        #expect(await runner.abiVersion == 3)
     }
 
     @Test func aNonConstantABIExportIsRefusedWithoutCallingIt() async throws {
@@ -436,7 +516,9 @@ struct BinaryInspectionTests {
             (data (i32.const 16) "ran")
             (func (export "ito_abi_version") (result i32)
                 (call $print (i32.const 16) (i32.const 3))
-                i32.const 2)
+                i32.const 3)
+            \(kindsExport(1))
+            \(errorExport(2))
             """)
 
         await #expect(throws: ItoError.self) { try await runner.loadPlugin(fromBytes: module) }
@@ -452,7 +534,8 @@ struct BinaryInspectionTests {
             (import "ito:core/std" "print" (func $print (param i32 i32)))
             (memory (export "memory") 1)
             (data (i32.const 16) "ran")
-            \(abiExport(2))
+            \(abiExport(3))
+            \(errorExport(2))
             (func (export "ito_supported_kinds") (result i32)
                 (call $print (i32.const 16) (i32.const 3))
                 i32.const 1)
@@ -471,6 +554,8 @@ struct BinaryInspectionTests {
             (import "ito:core/std" "print" (func $print (param i32 i32)))
             (memory (export "memory") 1)
             (data (i32.const 16) "ran")
+            \(abiExport(3))
+            \(kindsExport(1))
             (func (export "ito_error_version") (result i32)
                 (call $print (i32.const 16) (i32.const 3))
                 i32.const 2)
@@ -489,9 +574,10 @@ struct BinaryInspectionTests {
             (import "ito:core/std" "print" (func $print (param i32 i32)))
             (memory (export "memory") 1)
             (data (i32.const 16) "ran")
-            \(abiExport(2))
+            \(abiExport(3))
+            \(errorExport(2))
             \(kindsExport(8))
-            (func (export "get_manga_list") (param i32 i32) (result i64)
+            (func (export "get_listing") (param i32 i32 i32) (result i64)
                 (call $print (i32.const 16) (i32.const 3))
                 i64.const 0)
             """)
@@ -516,13 +602,14 @@ struct BinaryInspectionTests {
         try wasm("""
             (import "ito:core/std" "print" (func (param i32 i32)))
             (memory (export "memory") 1)
-            \(abiExport(2))
+            \(abiExport(3))
             \(kindsExport(4))
+            \(errorExport(2))
             """)
     }
 
     private static let expectedBinary = PluginBinaryInterface(
-        abiVersion: 2, imports: ["ito:core/std.print"], kinds: [.novel])
+        abiVersion: 3, imports: ["ito:core/std.print"], kinds: [.novel], errorProtocolVersion: 2)
 
     @Test func aBundleIsInspectedWithoutBeingLoaded() throws {
         let url = try zipFile([.stored("manifest.json", Self.manifestBytes()), .stored("main.wasm", Self.module())])

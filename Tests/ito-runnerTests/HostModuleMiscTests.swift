@@ -50,6 +50,7 @@ struct HostModuleMiscTests {
             (module
                 (import "ito:core/defaults" "set_secret" (func $set_secret (param i32 i32 i32 i32)))
                 (memory (export "memory") 1)
+                \(abi3Prelude())
                 (data (i32.const 16) "tok")
                 (data (i32.const 32) "abc")
                 (func (export "alloc") (param i32) (result i32) (i32.const 1024))
@@ -76,6 +77,7 @@ struct HostModuleMiscTests {
             (module
                 (import "ito:core/defaults" "get" (func $get (param i32 i32) (result i64)))
                 (memory (export "memory") 1)
+                \(abi3Prelude())
                 (data (i32.const 16) "test_key")
                 ;; Grows memory by a page and hands out an address only reachable after growing.
                 (func (export "alloc") (param i32) (result i32)
@@ -102,6 +104,7 @@ struct HostModuleMiscTests {
             (module
                 (import "ito:core/defaults" "get" (func $def_get (param i32 i32) (result i64)))
                 (memory (export "memory") 1)
+                \(abi3Prelude())
 
                 ;; Data string at offset 16: "test_key" -> 8 bytes
                 (data (i32.const 16) "test_key")
@@ -137,7 +140,7 @@ struct HostModuleMiscTests {
         let responseBytes = try await runner.readMemory(
             offset: Int(responsePtr), length: Int(responseLen))
 
-        let resultString = try ItoPostcardDecoder(abiVersion: 2).decode(String?.self, from: responseBytes)
+        let resultString = try ItoPostcardDecoder(abiVersion: 3).decode(String?.self, from: responseBytes)
         #expect(resultString == "test_val")
     }
 }

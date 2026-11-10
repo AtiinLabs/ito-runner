@@ -14,8 +14,8 @@ struct PostcardCodecTests {
 
     @Test("Encode and Decode Simple Struct")
     func testSimpleStructRoundtrip() throws {
-        let encoder = ItoPostcardEncoder(abiVersion: 2)
-        let decoder = ItoPostcardDecoder(abiVersion: 2)
+        let encoder = ItoPostcardEncoder(abiVersion: 3)
+        let decoder = ItoPostcardDecoder(abiVersion: 3)
 
         let original = SimpleStruct(id: 42, name: "Test Wasm Plugin", isActive: true)
 
@@ -42,8 +42,8 @@ struct PostcardCodecTests {
 
     @Test("Encode and Decode Arrays and Optionals")
     func testComplexStructRoundtrip() throws {
-        let encoder = ItoPostcardEncoder(abiVersion: 2)
-        let decoder = ItoPostcardDecoder(abiVersion: 2)
+        let encoder = ItoPostcardEncoder(abiVersion: 3)
+        let decoder = ItoPostcardDecoder(abiVersion: 3)
 
         let original = ComplexStruct(values: [-1, 0, 1, 100], optionalString: nil)
 

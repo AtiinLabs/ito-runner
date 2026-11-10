@@ -26,6 +26,7 @@ struct PluginFailureTests {
         (module
             (import "ito:core/std" "print" (func $print (param i32 i32)))
             (memory (export "memory") 1)
+            \(abi3Prelude())
             \(lines.map { "(data (i32.const \($0.offset)) \"\($0.text)\")" }.joined(separator: "\n"))
             (data (i32.const 900) "\\00\\00")
             (global $next (mut i32) (i32.const 1024))
@@ -49,12 +50,12 @@ struct PluginFailureTests {
             (func (export "get_home") (result i64)
                 \(printCall(0))
                 i64.const 0)
-            (func (export "get_manga_list") (param i32 i32 i32) (result i64)
+            (func (export "get_listing") (param i32 i32 i32) (result i64)
                 i64.const 0)
-            (func (export "get_search_manga_list") (param i32 i32 i32 i32 i32) (result i64)
-                ;; (900 << 32) | 2: an empty PageResult (no entries, no next page)
+            (func (export "search") (param i32 i32 i32 i32 i32 i32) (result i64)
+                ;; (900 << 32) | 2: an empty MediaPageResult (no entries, no next page)
                 i64.const 3865470566402)
-            (func (export "get_page_list") (param i32 i32 i32 i32) (result i64)
+            (func (export "get_chapter_pages") (param i32 i32 i32 i32) (result i64)
                 \(printCall(4))
                 i64.const 0)
             (func (export "get_settings") (result i64)
@@ -97,7 +98,7 @@ struct PluginFailureTests {
     @Test func aFailureWithoutAReasonIsStillAFailure() async throws {
         let runner = try await loadRunner()
 
-        await #expect(throws: ItoError.pluginFailed(function: "get_manga_list", reason: nil)) {
+        await #expect(throws: ItoError.pluginFailed(function: "get_listing", reason: nil)) {
             try await runner.getMangaList(listing: Listing(id: "all", name: "All", kind: 0), page: 1)
         }
     }
@@ -106,7 +107,7 @@ struct PluginFailureTests {
         let runner = try await loadRunner()
         _ = try? await runner.getHome(context: .test)
 
-        await #expect(throws: ItoError.pluginFailed(function: "get_manga_list", reason: nil)) {
+        await #expect(throws: ItoError.pluginFailed(function: "get_listing", reason: nil)) {
             try await runner.getMangaList(listing: Listing(id: "all", name: "All", kind: 0), page: 1)
         }
     }
@@ -118,7 +119,7 @@ struct PluginFailureTests {
 
         await #expect(
             throws: ItoError.pluginFailed(
-                function: "get_page_list", reason: "Deserialization error: unexpected end of input")
+                function: "get_chapter_pages", reason: "Deserialization error: unexpected end of input")
         ) {
             try await runner.getPageList(manga: manga, chapter: chapter)
         }
@@ -130,10 +131,13 @@ struct PluginFailureTests {
         #expect(try await runner.getSettings(context: .test) == nil)
     }
 
-    @Test func anUnsupportedOptionalExportMeansNotHandled() async throws {
+    /// Only the typed `unsupported` category means "not handled"; text that says so is a failure.
+    @Test func aPrintedUnsupportedMessageIsAFailureNotAnAbsence() async throws {
         let runner = try await loadRunner()
 
-        #expect(try await runner.handleUrl("https://example.com", context: .test) == nil)
+        await #expect(throws: ItoError.pluginFailed(function: "handle_url", reason: "Unsupported operation")) {
+            try await runner.handleUrl("https://example.com", context: .test)
+        }
     }
 
     @Test func aRefusedImageIsAFailureNotAFallback() async throws {
@@ -172,13 +176,13 @@ struct PostcardRangeTests {
     @Test func anInt32OutOfRangeThrowsInsteadOfTrapping() {
         // zig-zag 2^31, one past Int32.max
         #expect(throws: ItoError.postcardDecodingError("Value 2147483648 does not fit in Int32.")) {
-            try ItoPostcardDecoder(abiVersion: 2).decode(Int32Holder.self, from: [0x80, 0x80, 0x80, 0x80, 0x10])
+            try ItoPostcardDecoder(abiVersion: 3).decode(Int32Holder.self, from: [0x80, 0x80, 0x80, 0x80, 0x10])
         }
     }
 
     @Test func aUInt16OutOfRangeThrowsInsteadOfTrapping() {
         #expect(throws: ItoError.postcardDecodingError("Value 70000 does not fit in UInt16.")) {
-            try ItoPostcardDecoder(abiVersion: 2).decode(UInt16Holder.self, from: [0xF0, 0xA2, 0x04])
+            try ItoPostcardDecoder(abiVersion: 3).decode(UInt16Holder.self, from: [0xF0, 0xA2, 0x04])
         }
     }
 
@@ -186,7 +190,7 @@ struct PostcardRangeTests {
         // UInt64.max as a varint
         let length: [UInt8] = Array(repeating: 0xFF, count: 9) + [0x01]
         #expect(throws: ItoError.postcardDecodingError("Value 18446744073709551615 does not fit in Int.")) {
-            try ItoPostcardDecoder(abiVersion: 2).decode([String].self, from: length)
+            try ItoPostcardDecoder(abiVersion: 3).decode([String].self, from: length)
         }
     }
 }

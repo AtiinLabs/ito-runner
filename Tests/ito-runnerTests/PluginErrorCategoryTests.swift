@@ -13,12 +13,13 @@ struct PluginErrorCategoryTests {
         (module
             (import "ito:core/std" "print" (func $print (param i32 i32)))
             (memory (export "memory") 1)
+            \(abi3Prelude())
             (data (i32.const 16) "Error in get_home: Add your server URL")
-            (data (i32.const 128) "Error in get_manga_list: Plain reason")
+            (data (i32.const 128) "Error in get_listing: Plain reason")
             ;; {category: needsSetup (zigzag 0), message: "Add your server URL"}
             (data (i32.const 2048) "\\00\\13Add your server URL")
-            ;; {category: other (zigzag 10), message: "Unsupported operation"}
-            (data (i32.const 2100) "\\0a\\15Unsupported operation")
+            ;; {category: unsupported (zigzag 12), message: "Unsupported operation"}
+            (data (i32.const 2100) "\\0c\\15Unsupported operation")
             ;; {category: needsLogin (zigzag 14), message: "Sign in!"}
             (data (i32.const 2200) "\\0e\\08Sign in!")
             (global $next (mut i32) (i32.const 4096))
@@ -60,9 +61,9 @@ struct PluginErrorCategoryTests {
                 i64.const 9019431321623
                 global.set $lastError
                 i64.const 0)
-            (func (export "get_manga_list") (param i32 i32 i32) (result i64)
+            (func (export "get_listing") (param i32 i32 i32) (result i64)
                 i32.const 128
-                i32.const 37
+                i32.const 34
                 call $print
                 i64.const 0)
             (func (export "handle_url") (param i32 i32) (result i64)
@@ -108,7 +109,7 @@ struct PluginErrorCategoryTests {
         let runner = try await loadRunner()
 
         await #expect(throws: ItoError.pluginFailed(
-            function: "get_manga_list", reason: "Plain reason", category: .other
+            function: "get_listing", reason: "Plain reason", category: .other
         )) {
             try await runner.getMangaList(listing: Listing(id: "all", name: "All", kind: 0), page: 1)
         }
@@ -125,12 +126,13 @@ struct PluginErrorCategoryTests {
     }
 
     @Test func reportsDecodeFromTheBytesTheSDKWrites() throws {
-        // ito-rs encodes ErrorCategory as a zigzag i32 (NeedsSetup0 … NeedsLogin7), then the message.
+        // ito-rs encodes ErrorCategory as a zigzag i32 (NeedsSetup 0 … ContractViolation 8), then the message.
         let categories: [PluginErrorCategory] = [
-            .needsSetup, .unauthorized, .network, .server, .notFound, .other, .unsupported, .needsLogin
+            .needsSetup, .unauthorized, .network, .server, .notFound, .other, .unsupported, .needsLogin,
+            .contractViolation
         ]
         for (index, category) in categories.enumerated() {
-            let payload = try ItoPostcardDecoder(abiVersion: 2).decode(PluginErrorPayload.self, from: [UInt8(index * 2), 1, 0x78])
+            let payload = try ItoPostcardDecoder(abiVersion: 3).decode(PluginErrorPayload.self, from: [UInt8(index * 2), 1, 0x78])
             #expect(payload.category == category)
             #expect(payload.message == "x")
         }

@@ -49,6 +49,7 @@ struct WebviewResultTests {
         (module
             (import "ito:core/webview" "webview_execute_js" (func $js (param i32 i32) (result i32)))
             (memory (export "memory") 1)
+            \(abi3Prelude())
             (data (i32.const 16) "go()")
             (global $last (mut i32) (i32.const 7))
             (func (export "alloc") (param i32) (result i32) (i32.const 1024))

@@ -34,6 +34,7 @@ struct HostModuleNetTests {
                 (import "ito:core/net" "fetch" (func $fetch (param i32 i32) (result i32)))
                 (import "ito:core/net" "fetch_read" (func $fetch_read (param i32)))
                 (memory (export "memory") 1)
+                \(abi3Prelude())
 
                 (func $alloc (export "alloc") (param i32) (result i32)
                     ;; Just return a fixed offset like 1024 for testing allocation
@@ -69,9 +70,8 @@ struct HostModuleNetTests {
 
         let wasmBytes = try wat2wasm(watSrc)
 
-        // 2. Setup runner and inject the mock module
-        let runner = ItoRunner()
-        let bridge = WasmBridge(runner: runner)
+        // 2. Set up a standalone bridge and inject the mock module
+        let bridge = WasmBridge()
         bridge.activeCallToken = CallToken(context: .test)
         bridge.netModule = MockNetModule()
 
@@ -89,7 +89,7 @@ struct HostModuleNetTests {
             headers: [:],
             body: nil
         )
-        let requestBytes = try ItoPostcardEncoder(abiVersion: 2).encode(request)
+        let requestBytes = try ItoPostcardEncoder(abiVersion: 3).encode(request)
 
         // 4. Manually write the request into the Wasm memory at offset 0
         guard let memoryExport = instance.exports["memory"],
@@ -131,7 +131,7 @@ struct HostModuleNetTests {
             Array(UnsafeRawBufferPointer(buffer))
         }
 
-        let response = try ItoPostcardDecoder(abiVersion: 2).decode(NetResponse.self, from: responseBytes)
+        let response = try ItoPostcardDecoder(abiVersion: 3).decode(NetResponse.self, from: responseBytes)
 
         #expect(response.status == 200)
         #expect(response.headers["Content-Type"] == "application/json")

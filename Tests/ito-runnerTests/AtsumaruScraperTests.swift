@@ -241,7 +241,7 @@ struct AtsumaruScraperTests {
                     key: chap.id,
                     title: chap.title,
                     volume: nil,
-                    chapter: chap.number,
+                    chapter: Double(chap.number),
                     dateUpdated: Double(chap.createdAt) / 1000.0,
                     scanlator: scanlatorName,
                     url: chapterUrl,

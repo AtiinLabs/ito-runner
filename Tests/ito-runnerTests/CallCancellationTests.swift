@@ -34,11 +34,12 @@ private final class HangingNetModule: NetModule, @unchecked Sendable {
 // A broken call would leave these tests awaiting a request that never ends; fail instead.
 @Suite("Plugin call cancellation and deadlines", .timeLimit(.minutes(1)))
 struct CallCancellationTests {
-    /// `get_home` makes one network request (GET http://x) and returns 0; `get_manga_list` counts
+    /// `get_home` makes one network request (GET http://x) and returns 0; `get_listing` counts
     /// how often it ran.
     private static let pluginWAT = """
         (module
             (import "ito:core/net" "fetch" (func $fetch (param i32 i32) (result i32)))
+            \(abi3Prelude())
             (memory (export "memory") 1)
             (data (i32.const 64) "\\08http://x\\03GET\\00\\00")
             (global $next (mut i32) (i32.const 1024))
@@ -61,7 +62,7 @@ struct CallCancellationTests {
                 call $fetch
                 drop
                 i64.const 0)
-            (func (export "get_manga_list") (param i32 i32 i32) (result i64)
+            (func (export "get_listing") (param i32 i32 i32) (result i64)
                 global.get $listCalls
                 i32.const 1
                 i32.add
@@ -157,7 +158,7 @@ struct HostWorkWaitTests {
     @Test func aRequestPastTheDeadlineReachesThePluginAsA500() async throws {
         let net = HangingNetModule()
         // Configured before it reaches the queue, then used only there, as in the runner.
-        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        nonisolated(unsafe) let bridge = WasmBridge()
         bridge.activeCallToken = CallToken(context: .test)
         bridge.netModule = net
         bridge.timeouts = HostCallTimeouts(net: 0.05, webview: 0.05)
@@ -179,7 +180,7 @@ struct HostWorkWaitTests {
             }
         }
         // Configured before it reaches the queue, then used only there, as in the runner.
-        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        nonisolated(unsafe) let bridge = WasmBridge()
         bridge.activeCallToken = CallToken(context: .test)
         bridge.netModule = Spoofing()
 
@@ -195,7 +196,7 @@ struct HostWorkWaitTests {
     @Test func aCancelledCallsRequestReachesThePluginAsA500() async throws {
         let net = HangingNetModule()
         // Configured before it reaches the queue, then used only there, as in the runner.
-        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        nonisolated(unsafe) let bridge = WasmBridge()
         bridge.netModule = net
         let token = CallToken(context: .test)
         bridge.activeCallToken = token
@@ -214,7 +215,7 @@ struct HostWorkWaitTests {
     @Test func aCancelledWebviewLoadGivesThePluginNoResult() async throws {
         let webview = HangingWebviewModule()
         // Configured before it reaches the queue, then used only there, as in the runner.
-        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        nonisolated(unsafe) let bridge = WasmBridge()
         bridge.webviewModule = webview
         let token = CallToken(context: .test)
         bridge.activeCallToken = token
@@ -232,7 +233,7 @@ struct HostWorkWaitTests {
 
     @Test func aWebviewLoadPastTheDeadlineThrows() async throws {
         // Configured before it reaches the queue, then used only there, as in the runner.
-        nonisolated(unsafe) let bridge = WasmBridge(runner: ItoRunner())
+        nonisolated(unsafe) let bridge = WasmBridge()
         bridge.activeCallToken = CallToken(context: .test)
         bridge.webviewModule = HangingWebviewModule()
         bridge.timeouts = HostCallTimeouts(net: 0.05, webview: 0.05)

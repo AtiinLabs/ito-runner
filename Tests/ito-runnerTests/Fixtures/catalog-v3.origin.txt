@@ -1,0 +1,9 @@
+catalog-v3.json is a byte-identical copy of fixtures/catalog-v3.json at ito-rs@213ccaa26b7d7c3bc68f5399ba12ef8414f187a9
+("Define the ABI 3 catalog schema", AtiinLabs/ito-rs #18).
+
+sha256  325b31664ea48dcf82242501346b5f09402ea1dd0b43d8156a63ba8d1ad5a8e4
+bytes   42138
+
+The file is JSON, which has no room for a header, so its origin is recorded here. Do not edit the
+fixture in place: a change to the contract lands in ito-rs first and the file is copied again with
+this note updated. CatalogFixtureTests checks the digest above.

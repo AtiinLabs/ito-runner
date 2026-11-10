@@ -24,18 +24,14 @@ final class RunnerLifetimeTests: XCTestCase {
             let defaults = LifetimeDefaults { released.fulfill() }
             await runner!.setDefaultsModule(defaults)
         }
-        try await runner!.loadPlugin(fromBytes: wat2wasm(#"(module (memory (export "memory") 1))"#))
+        try await runner!.loadPlugin(fromBytes: wat2wasm("(module (memory (export \"memory\") 1) \(abi3Prelude()))"))
         runner = nil
         await fulfillment(of: [released], timeout: 2)
     }
 
-    func testStandaloneHostCallbacksKeepTheirCodecsButNotTheActor() throws {
-        var runner: ItoRunner? = ItoRunner()
-        let runnerWasReleased = { [weak runner] in runner == nil }
-        let bridge = WasmBridge(runner: runner!)
+    func testStandaloneHostCallbacksServeWithoutAnyRunner() throws {
+        let bridge = WasmBridge()
         bridge.defaultsModule = LifetimeDefaults()
-        runner = nil
-        XCTAssertTrue(runnerWasReleased())
 
         let engine = Engine()
         let store = Store(engine: engine)
@@ -60,7 +56,7 @@ final class RunnerLifetimeTests: XCTestCase {
         let bytes = memory.withUnsafeMutableBufferPointer(
             offset: UInt(packed >> 32), count: Int(packed & 0xffff_ffff)
         ) { Array($0) }
-        let value = try ItoPostcardDecoder(abiVersion: 2).decode(String?.self, from: bytes)
+        let value = try ItoPostcardDecoder(abiVersion: 3).decode(String?.self, from: bytes)
         XCTAssertEqual(value, "memory-only")
     }
 }

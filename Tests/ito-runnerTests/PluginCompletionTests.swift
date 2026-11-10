@@ -5,17 +5,17 @@ import WAT
 
 @Suite("Plugin completion notifications")
 struct PluginCompletionTests {
+    /// A `mark_completed(kind, media, unit)` export running `body`.
     private func chapter(_ body: String) -> String {
         """
-        (func (export "mark_chapter_read")
-          (param $media i32) (param $mediaLength i32) (param $unit i32) (param $unitLength i32)
+        (func (export "mark_completed")
+          (param $kind i32) (param $media i32) (param $mediaLength i32) (param $unit i32) (param $unitLength i32)
           (result i32) \(body))
         """
     }
 
     private func runner(
         exports: String,
-        version: UInt32 = 2,
         failure: PluginErrorCategory? = nil,
         allocation: String = "global.get $cursor local.tee $pointer local.get $length i32.add global.set $cursor local.get $pointer",
         errorExport: String = ""
@@ -23,12 +23,11 @@ struct PluginCompletionTests {
         var error = errorExport
         var data = ""
         if let failure {
-            let bytes = try ItoPostcardEncoder(abiVersion: 2).encode(PluginErrorPayload(category: failure, message: "Unsupported operation"))
+            let bytes = try ItoPostcardEncoder(abiVersion: 3).encode(PluginErrorPayload(category: failure, message: "Unsupported operation"))
             data = "(data (i32.const 128) \"\(bytes.map { String(format: "\\%02x", $0) }.joined())\")"
             let packed = (UInt64(128) << 32) | UInt64(bytes.count)
             error = "(func (export \"ito_last_error\") (result i64) i64.const \(packed))"
         }
-        let marker = version == 0 ? "" : "(func (export \"ito_error_version\") (result i32) i32.const \(version))"
         let wasm = try wat2wasm("""
         (module
           (memory (export "memory") 1)
@@ -44,7 +43,7 @@ struct PluginCompletionTests {
               i32.const 512 i32.const 512 i32.load i32.const 1 i32.add i32.store
               i32.const 516 i32.const 516 i32.load local.get $length i32.add i32.store
             end)
-          \(marker) \(data) \(error) \(exports))
+          \(abi3Prelude(kinds: 0b111)) \(data) \(error) \(exports))
         """)
         let result = ItoRunner()
         try await result.loadPlugin(fromBytes: wasm)
@@ -58,14 +57,14 @@ struct PluginCompletionTests {
 
     @Test func opaqueUnicodeKeysUseByteLengthsAndAcknowledgementsAreProviderSpecific() async throws {
         let acceptsChapter = chapter("""
+          local.get $kind i32.const 1 i32.eq if i32.const 0 return end
           local.get $mediaLength i32.const 11 i32.ne if unreachable end
           local.get $unitLength i32.const 11 i32.ne if unreachable end
           local.get $media i32.load8_u offset=1 i32.const 195 i32.ne if unreachable end
           local.get $unit i32.load8_u offset=8 i32.const 228 i32.ne if unreachable end
           i32.const 1
         """)
-        let unsupportedEpisode = #"(func (export "mark_episode_watched") (param i32 i32 i32 i32) (result i32) i32.const 0)"#
-        let subject = try await runner(exports: acceptsChapter + unsupportedEpisode, failure: .unsupported)
+        let subject = try await runner(exports: acceptsChapter, failure: .unsupported)
         #expect(try await subject.markChapterRead(mediaKey: "média/🍵", chapterKey: "chapter/七"))
         #expect(try await !subject.markEpisodeWatched(mediaKey: "média/🍵", episodeKey: "chapter/七"))
         try await expectFreed(subject, count: 4, bytes: 44)
@@ -95,29 +94,28 @@ struct PluginCompletionTests {
     }
 
     @Test(arguments: [
-        (UInt32(0), PluginErrorCategory.other, true),
-        (1, .unauthorized, false),
-        (2, .other, false),
-        (2, .unsupported, true)
+        (PluginErrorCategory.unauthorized, false),
+        (.other, false),
+        (.unsupported, true)
     ])
     func typedRefusalsAreNotUnsupportedJustBecauseTheirTextMatches(
-        _ version: UInt32, _ category: PluginErrorCategory, _ unsupported: Bool
+        _ category: PluginErrorCategory, _ unsupported: Bool
     ) async throws {
-        let subject = try await runner(exports: chapter("i32.const 0"), version: version, failure: category)
+        let subject = try await runner(exports: chapter("i32.const 0"), failure: category)
         if unsupported {
             #expect(try await !subject.markChapterRead(mediaKey: "m", chapterKey: "c"))
         } else {
             await #expect(throws: ItoError.pluginFailed(
-                function: "mark_chapter_read", reason: "Unsupported operation", category: category
+                function: "mark_completed", reason: "Unsupported operation", category: category
             )) { try await subject.markChapterRead(mediaKey: "m", chapterKey: "c") }
         }
         try await expectFreed(subject, count: 2, bytes: 2)
     }
 
     @Test(arguments: [
-        #"(global (export "mark_chapter_read") i32 (i32.const 1))"#,
-        #"(func (export "mark_chapter_read") (result i32) i32.const 1)"#,
-        #"(func (export "mark_chapter_read") (param i32 i32 i32 i32) (result i64) i64.const 1)"#
+        #"(global (export "mark_completed") i32 (i32.const 1))"#,
+        #"(func (export "mark_completed") (result i32) i32.const 1)"#,
+        #"(func (export "mark_completed") (param i32 i32 i32 i32 i32) (result i64) i64.const 1)"#
     ])
     func malformedExportsFailBeforeAllocatingArguments(_ exports: String) async throws {
         let subject = try await runner(exports: exports)

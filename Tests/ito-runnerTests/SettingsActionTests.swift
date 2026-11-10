@@ -35,13 +35,12 @@ struct SettingsActionTests {
         let encoded = payload.map { String(format: "\\%02x", $0) }.joined()
         var failureExports = ""
         if let failure {
-            let report = try ItoPostcardEncoder(abiVersion: 2).encode(
+            let report = try ItoPostcardEncoder(abiVersion: 3).encode(
                 PluginErrorPayload(category: failure, message: "Unsupported operation")
             )
             let data = report.map { String(format: "\\%02x", $0) }.joined()
             failureExports = """
                 (data (i32.const 256) "\(data)")
-                (func (export "ito_error_version") (result i32) i32.const 2)
                 (func (export "ito_last_error") (result i64)
                     i64.const \((UInt64(256) << 32) | UInt64(report.count)))
                 """
@@ -49,6 +48,7 @@ struct SettingsActionTests {
         return try wat2wasm("""
             (module
                 (memory (export "memory") 1)
+                \(abi3Prelude())
                 (global $frees (mut i32) (i32.const 0))
                 (func (export "alloc") (param i32) (result i32) i32.const 1024)
                 (func (export "dealloc") (param i32 i32)
@@ -62,9 +62,9 @@ struct SettingsActionTests {
             """)
     }
 
-    @Test func missingExportsLeaveLegacyPluginsUsable() async throws {
+    @Test func missingExportsLeaveSettingsActionsUnsupported() async throws {
         let runner = ItoRunner()
-        try await runner.loadPlugin(fromBytes: wat2wasm("(module (memory (export \"memory\") 1))"))
+        try await runner.loadPlugin(fromBytes: wat2wasm("(module (memory (export \"memory\") 1) \(abi3Prelude()))"))
         #expect(try await runner.getSettingsActions(context: .test) == nil)
         #expect(try await runner.runSettingsAction("probe", context: .test) == nil)
         #expect(try await runner.validateSettings(context: .test) == nil)
