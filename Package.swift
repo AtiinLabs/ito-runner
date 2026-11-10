@@ -19,7 +19,7 @@ let package = Package(
         // AtiinLabs fork of WasmKit; its fixes (e.g. iOS 15 builds) are not tagged.
         .package(
             url: "https://github.com/AtiinLabs/WasmKit.git",
-            revision: "c76d7ea351c10480c6473ab522fdc1b622ed9432"),
+            revision: "c111d9111c52c23b2aaca1cea45d8495d64d8bf3"),
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0"),
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.6.0"),
         .package(

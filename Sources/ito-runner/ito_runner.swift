@@ -169,7 +169,7 @@ public actor ItoRunner {
             let store = Store(engine: engine)
 
             // 3. Parse the Wasm Module
-            let module = try parseWasm(bytes: wasmBytes)
+            let module = try parseWasm(bytes: wasmBytes, limits: Self.parsingLimits)
 
             // 4. Setup Imports
             let bridge = WasmBridge(runner: self)
