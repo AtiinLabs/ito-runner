@@ -147,45 +147,45 @@ struct ContentKindTests {
         let fields: [UInt8] = [1, UInt8(ascii: "c"), 0, 0, 0, 0, 0, 0, 0, 0]
 
         // The entry's own stored chapters have no kind either; they are resolved too.
-        _ = try await runner.getChapterPages(entry: manga(chapters: [Chapter(key: "c")]), chapter: Chapter(key: "c"))
+        _ = try await runner.getChapterPages(entry: manga(chapters: [Chapter(key: "c")]), chapter: Chapter(key: "c"), context: .test)
         #expect(try await captured(runner) == fields + [0])
-        _ = try await runner.getChapterPages(entry: novel(), chapter: Chapter(key: "c"))
+        _ = try await runner.getChapterPages(entry: novel(), chapter: Chapter(key: "c"), context: .test)
         #expect(try await captured(runner) == fields + [2])
         // A kind the plugin chose is kept, whatever the entry's.
-        _ = try await runner.getChapterPages(entry: manga(), chapter: Chapter(key: "c", kind: .text))
+        _ = try await runner.getChapterPages(entry: manga(), chapter: Chapter(key: "c", kind: .text), context: .test)
         #expect(try await captured(runner) == fields + [2])
     }
 
     @Test func anABI1PluginGetsChaptersAsItKnowsThem() async throws {
         let runner = try await plugin(Self.abi1Manga)
-        _ = try await runner.getChapterPages(entry: manga(), chapter: Chapter(key: "c", kind: .text))
+        _ = try await runner.getChapterPages(entry: manga(), chapter: Chapter(key: "c", kind: .text), context: .test)
         #expect(try await captured(runner) == [1, UInt8(ascii: "c"), 0, 0, 0, 0, 0, 0, 0, 0])
     }
 
     @Test func searchesNameTheirKindAndSkipKindsThePluginDoesNotServe() async throws {
         let runner = try await plugin(abi2(kinds: 0b101))
-        _ = try await runner.search(query: "q", page: 1, kind: .novel)
+        _ = try await runner.search(query: "q", page: 1, kind: .novel, context: .test)
         #expect(try await storedKind(runner) == 2)
-        _ = try await runner.search(query: "q", page: 1)
+        _ = try await runner.search(query: "q", page: 1, context: .test)
         #expect(try await storedKind(runner) == -1)
 
         let untouched = try await plugin(abi2(kinds: 0b101))
-        let result = try await untouched.search(query: "q", page: 1, kind: .anime)
+        let result = try await untouched.search(query: "q", page: 1, kind: .anime, context: .test)
         #expect(result.entries.isEmpty && !result.hasNextPage)
         #expect(try await storedKind(untouched) == Int32.max, "the plugin must not be called")
 
         let legacy = try await plugin(Self.abi1Manga)
-        _ = try await legacy.search(query: "q", page: 1, kind: .novel)
+        _ = try await legacy.search(query: "q", page: 1, kind: .novel, context: .test)
         #expect(try await storedKind(legacy) == Int32.max, "an ABI 1 manga plugin has no novels")
-        _ = try await legacy.search(query: "q", page: 1, kind: .manga)
+        _ = try await legacy.search(query: "q", page: 1, kind: .manga, context: .test)
         #expect(try await storedKind(legacy) == 0)
     }
 
     @Test func completionsNameTheirKind() async throws {
         let runner = try await plugin(abi2(kinds: 0b111))
-        #expect(try await runner.markCompleted(kind: .anime, mediaKey: "a", unitKey: "e"))
+        #expect(try await runner.markCompleted(kind: .anime, mediaKey: "a", unitKey: "e", context: .test))
         #expect(try await storedKind(runner) == 1)
-        #expect(try await runner.markCompleted(kind: .novel, mediaKey: "n", unitKey: "c"))
+        #expect(try await runner.markCompleted(kind: .novel, mediaKey: "n", unitKey: "c", context: .test))
         #expect(try await storedKind(runner) == 2)
     }
 
@@ -196,12 +196,12 @@ struct ContentKindTests {
               i64.const \(Self.packed(2048, anime.count)))
             """, update: anime)
 
-        let updated = try await runner.getMediaUpdate(.anime(Anime(key: "a", title: "")))
+        let updated = try await runner.getMediaUpdate(.anime(Anime(key: "a", title: "")), context: .test)
         #expect(updated.kind == .anime && updated.key == "a")
         await #expect(throws: ItoError.pluginFailed(
             function: "get_media_update", reason: "The plugin returned a different kind of entry."
         )) {
-            try await runner.getMediaUpdate(manga())
+            try await runner.getMediaUpdate(manga(), context: .test)
         }
     }
 
@@ -243,13 +243,13 @@ struct ContentKindTests {
         let reason = "The plugin returned a kind it doesn't serve (novel)."
 
         await #expect(throws: ItoError.pluginFailed(function: "get_listing", reason: reason)) {
-            try await runner.getListing(Listing(id: "l", name: "L", kind: 0), page: 1)
+            try await runner.getListing(Listing(id: "l", name: "L", kind: 0), page: 1, context: .test)
         }
         await #expect(throws: ItoError.pluginFailed(function: "search", reason: reason)) {
-            try await runner.search(query: "q", page: 1)
+            try await runner.search(query: "q", page: 1, context: .test)
         }
         await #expect(throws: ItoError.pluginFailed(function: "get_home", reason: reason)) {
-            try await runner.getHome()
+            try await runner.getHome(context: .test)
         }
     }
 
@@ -265,7 +265,7 @@ struct ContentKindTests {
             """, buffers: [(3072, report)])
 
         await #expect(throws: ItoError.pluginFailed(function: "mark_completed", reason: "No", category: .unauthorized)) {
-            try await runner.markCompleted(kind: .manga, mediaKey: "m", unitKey: "c")
+            try await runner.markCompleted(kind: .manga, mediaKey: "m", unitKey: "c", context: .test)
         }
     }
 
@@ -279,12 +279,12 @@ struct ContentKindTests {
               i64.const \(Self.packed(1024, 1)))
             """, buffers: [(3072, novels)])
 
-        let listed = try await runner.getListing(Listing(id: "l", name: "L", kind: 0), page: 1)
+        let listed = try await runner.getListing(Listing(id: "l", name: "L", kind: 0), page: 1, context: .test)
         #expect(listed.entries.map(\.kind) == [.novel] && listed.hasNextPage)
         guard case .novel(let novel)? = listed.entries.first else { return }
         #expect(novel.chapters?.first?.kind == nil, "an ABI 1 chapter has no kind")
         #expect(listed.entries[0].contentKind(of: Chapter(key: "c")) == .text)
-        _ = try await runner.getChapterPages(entry: listed.entries[0], chapter: Chapter(key: "c"))
+        _ = try await runner.getChapterPages(entry: listed.entries[0], chapter: Chapter(key: "c"), context: .test)
         #expect(try await captured(runner) == [1, UInt8(ascii: "c"), 0, 0, 0, 0, 0, 0, 0, 0])
     }
 }

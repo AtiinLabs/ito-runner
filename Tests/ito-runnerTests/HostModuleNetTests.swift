@@ -6,7 +6,7 @@ import WasmKit
 @testable import ito_runner
 
 struct MockNetModule: NetModule {
-    func fetch(request: NetRequest) async throws -> NetResponse {
+    func fetch(request: NetRequest, context: NetworkOperationContext) async throws -> NetResponse {
         // Assert we got what we expected
         #expect(request.url == "https://example.com")
         #expect(request.method == "GET")
@@ -72,6 +72,7 @@ struct HostModuleNetTests {
         // 2. Setup runner and inject the mock module
         let runner = ItoRunner()
         let bridge = WasmBridge(runner: runner)
+        bridge.activeCallToken = CallToken(context: .test)
         bridge.netModule = MockNetModule()
 
         let engine = Engine()

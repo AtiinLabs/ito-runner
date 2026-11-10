@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Net Module
 
 public protocol NetModule: Sendable {
-    func fetch(request: NetRequest) async throws -> NetResponse
+    func fetch(request: NetRequest, context: NetworkOperationContext) async throws -> NetResponse
 }
 
 public struct NetRequest: Codable, Sendable {
@@ -72,8 +72,8 @@ public protocol EnvModule: Sendable {
 // MARK: - Webview Module
 
 public protocol WebviewModule: Sendable {
-    func loadUrl(request: WebviewRequest) async throws -> WebviewResponse
-    func executeJs(script: String) async throws -> String
+    func loadUrl(request: WebviewRequest, context: NetworkOperationContext) async throws -> WebviewResponse
+    func executeJs(script: String, context: NetworkOperationContext) async throws -> String
 }
 
 public struct WebviewRequest: Codable, Sendable {

@@ -62,10 +62,10 @@ struct ControlsExportTests {
         }
         func invoke(_ runner: ItoRunner) async throws {
             switch self {
-            case .form: _ = try await runner.getSettingsSurface()
-            case .capabilities: _ = try await runner.getSearchCapabilities(kind: nil)
-            case .page: _ = try await runner.getOptionPage(OptionRequest(catalog: "tags", query: .search(text: "", offset: 0), limit: 50))
-            case .suggestions: _ = try await runner.getSearchSuggestions(query: "query", kind: nil)
+            case .form: _ = try await runner.getSettingsSurface(context: .test)
+            case .capabilities: _ = try await runner.getSearchCapabilities(kind: nil, context: .test)
+            case .page: _ = try await runner.getOptionPage(OptionRequest(catalog: "tags", query: .search(text: "", offset: 0), limit: 50), context: .test)
+            case .suggestions: _ = try await runner.getSearchSuggestions(query: "query", kind: nil, context: .test)
             }
         }
         var capabilitySupport: String {
@@ -146,7 +146,7 @@ struct ControlsExportTests {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: controlsModule(exports: ""))
         await #expect(throws: ItoError.controlContractViolation(function: "get_option_page", violation: .init(.requestInvalid))) {
-            try await runner.getOptionPage(OptionRequest(catalog: "bad id", query: .values([]), limit: 0))
+            try await runner.getOptionPage(OptionRequest(catalog: "bad id", query: .values([]), limit: 0), context: .test)
         }
         #expect(try await runner.executeExport("frees") == [.i32(0)])
     }
@@ -166,7 +166,7 @@ struct ControlsExportTests {
                 \(checks)
                 i64.const \(packed(1024, bytes.count)))
             """, data: bytes))
-        #expect(try await runner.getOptionPage(request) == page)
+        #expect(try await runner.getOptionPage(request, context: .test) == page)
         #expect(try await runner.executeExport("frees") == [.i32(2)])
     }
 
@@ -180,7 +180,7 @@ struct ControlsExportTests {
                     local.get $kind i32.const 2 i32.ne if unreachable end
                     i64.const \(packed(1024, bytes.count)))
                 """, data: bytes))
-            #expect(try await runner.getSearchSuggestions(query: "fri", kind: .novel) == suggestions)
+            #expect(try await runner.getSearchSuggestions(query: "fri", kind: .novel, context: .test) == suggestions)
             #expect(try await runner.executeExport("frees") == [.i32(3)])
         }
     }
@@ -189,7 +189,7 @@ struct ControlsExportTests {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: controlsModule(exports: "(global (export \"get_settings_form\") i32 (i32.const 0))"))
         await #expect(throws: ItoError.controlContractViolation(function: "get_settings_form", violation: .init(.signature))) {
-            try await runner.getSettingsSurface()
+            try await runner.getSettingsSurface(context: .test)
         }
     }
 }
@@ -201,7 +201,7 @@ struct SettingsSurfaceTests {
         try await runner.loadPlugin(fromBytes: controlsModule(exports: legacySettings + """
             (func (export "get_settings_form") (result i64) i64.const \(packed(1024, 1)))
             """))
-        guard case .form(let form) = try await runner.getSettingsSurface() else { Issue.record("Expected form"); return }
+        guard case .form(let form) = try await runner.getSettingsSurface(context: .test) else { Issue.record("Expected form"); return }
         #expect(form.sections.isEmpty)
         #expect(try await runner.executeExport("legacy_calls") == [.i32(0)])
     }
@@ -209,7 +209,7 @@ struct SettingsSurfaceTests {
     func absentOrUnsupportedFormUsesLegacy(_ unsupported: Bool) async throws {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: controlsModule(exports: legacySettings + (unsupported ? "(func (export \"get_settings_form\") (result i64) i64.const 0)" : ""), failure: unsupported ? .unsupported : nil))
-        guard case .legacy(let schema, let failure) = try await runner.getSettingsSurface() else { Issue.record("Expected legacy"); return }
+        guard case .legacy(let schema, let failure) = try await runner.getSettingsSurface(context: .test) else { Issue.record("Expected legacy"); return }
         #expect(schema.settings.isEmpty)
         #expect(failure == nil)
         #expect(try await runner.executeExport("legacy_calls") == [.i32(1)])
@@ -218,15 +218,15 @@ struct SettingsSurfaceTests {
         let runner = ItoRunner()
         let form = "(func (export \"get_settings_form\") (result i64) i64.const \(packed(1024, 1)))"
         try await runner.loadPlugin(fromBytes: controlsModule(exports: legacySettings + form, data: [33]))
-        guard case .legacy(_, let failure) = try await runner.getSettingsSurface() else { Issue.record("Expected legacy"); return }
+        guard case .legacy(_, let failure) = try await runner.getSettingsSurface(context: .test) else { Issue.record("Expected legacy"); return }
         #expect(failure == .controlContractViolation(function: "get_settings_form", violation: .init(.countSections)))
         try await runner.loadPlugin(fromBytes: controlsModule(exports: form, data: [33]))
-        await #expect(throws: ItoError.controlContractViolation(function: "get_settings_form", violation: .init(.countSections))) { try await runner.getSettingsSurface() }
+        await #expect(throws: ItoError.controlContractViolation(function: "get_settings_form", violation: .init(.countSections))) { try await runner.getSettingsSurface(context: .test) }
     }
     @Test func trapsNeverFallBack() async throws {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: controlsModule(exports: legacySettings + "(func (export \"get_settings_form\") (result i64) unreachable)"))
-        await #expect(throws: ItoError.self) { try await runner.getSettingsSurface() }
+        await #expect(throws: ItoError.self) { try await runner.getSettingsSurface(context: .test) }
         #expect(try await runner.executeExport("legacy_calls") == [.i32(0)])
     }
 }
@@ -250,7 +250,7 @@ struct SearchFiltersTransportTests {
     @Test func noCapabilitiesSendsExactlyEmptyVector() async throws {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: searchModule(capabilities: nil, expected: [0]))
-        _ = try await runner.search(query: "query", page: 1, filterValues: ["x": .toggle(true)])
+        _ = try await runner.search(query: "query", page: 1, filterValues: ["x": .toggle(true)], context: .test)
     }
     @Test func denseDefaultsAreCachedPerKindAndReloadClearsCache() async throws {
         let c = Control(id: "adult", title: "Adult", kind: .toggle(ToggleControl(defaultValue: false)))
@@ -259,28 +259,28 @@ struct SearchFiltersTransportTests {
         let wasm = try searchModule(capabilities: caps, expected: expected)
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: wasm)
-        _ = try await runner.search(query: "q", page: 1, kind: .manga)
-        _ = try await runner.search(query: "q", page: 2, kind: .manga)
-        _ = try await runner.getSearchCapabilities(kind: .manga)
+        _ = try await runner.search(query: "q", page: 1, kind: .manga, context: .test)
+        _ = try await runner.search(query: "q", page: 2, kind: .manga, context: .test)
+        _ = try await runner.getSearchCapabilities(kind: .manga, context: .test)
         #expect(try await runner.executeExport("calls") == [.i32(1)])
-        _ = try await runner.search(query: "q", page: 1, kind: .anime)
+        _ = try await runner.search(query: "q", page: 1, kind: .anime, context: .test)
         #expect(try await runner.executeExport("calls") == [.i32(2)])
         try await runner.loadPlugin(fromBytes: wasm)
-        _ = try await runner.search(query: "q", page: 1, kind: .manga)
+        _ = try await runner.search(query: "q", page: 1, kind: .manga, context: .test)
         #expect(try await runner.executeExport("calls") == [.i32(1)])
     }
     @Test func failuresAreCachedButSearchStillUsesEmptyFilters() async throws {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: searchModule(capabilities: nil, expected: [0], failure: true))
-        for _ in 0..<2 { _ = try await runner.search(query: "q", page: 1) }
-        await #expect(throws: ItoError.self) { try await runner.getSearchCapabilities(kind: nil) }
+        for _ in 0..<2 { _ = try await runner.search(query: "q", page: 1, context: .test) }
+        await #expect(throws: ItoError.self) { try await runner.getSearchCapabilities(kind: nil, context: .test) }
         #expect(try await runner.executeExport("calls") == [.i32(1)])
     }
     @Test func suggestionsRequireCapabilityAndBoundedQuery() async throws {
         let runner = ItoRunner()
         try await runner.loadPlugin(fromBytes: controlsModule(exports: "(func (export \"get_search_suggestions\") (param i32 i32 i32) (result i64) unreachable)"))
-        #expect(try await runner.getSearchSuggestions(query: "q", kind: nil) == nil)
-        #expect(try await runner.getSearchSuggestions(query: "", kind: nil) == nil)
-        #expect(try await runner.getSearchSuggestions(query: String(repeating: "x", count: 257), kind: nil) == nil)
+        #expect(try await runner.getSearchSuggestions(query: "q", kind: nil, context: .test) == nil)
+        #expect(try await runner.getSearchSuggestions(query: "", kind: nil, context: .test) == nil)
+        #expect(try await runner.getSearchSuggestions(query: String(repeating: "x", count: 257), kind: nil, context: .test) == nil)
     }
 }

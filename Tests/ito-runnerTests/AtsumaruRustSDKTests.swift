@@ -8,7 +8,7 @@ import Testing
 struct AtsumaruRustSDKTests {
 
     actor NativeNetModule: NetModule {
-        func fetch(request: NetRequest) async throws -> NetResponse {
+        func fetch(request: NetRequest, context: NetworkOperationContext) async throws -> NetResponse {
             guard let url = URL(string: request.url) else {
                 throw URLError(.badURL)
             }

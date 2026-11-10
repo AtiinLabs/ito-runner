@@ -90,7 +90,7 @@ struct PluginFailureTests {
         let runner = try await loadRunner()
 
         await #expect(throws: ItoError.pluginFailed(function: "get_home", reason: "Host error: Add your server URL")) {
-            try await runner.getHome()
+            try await runner.getHome(context: .test)
         }
     }
 
@@ -104,7 +104,7 @@ struct PluginFailureTests {
 
     @Test func aReasonDoesNotLeakIntoTheNextCall() async throws {
         let runner = try await loadRunner()
-        _ = try? await runner.getHome()
+        _ = try? await runner.getHome(context: .test)
 
         await #expect(throws: ItoError.pluginFailed(function: "get_manga_list", reason: nil)) {
             try await runner.getMangaList(listing: Listing(id: "all", name: "All", kind: 0), page: 1)
@@ -127,20 +127,20 @@ struct PluginFailureTests {
     @Test func thePluginsOwnLoggingIsNotAFailure() async throws {
         let runner = try await loadRunner()
 
-        #expect(try await runner.getSettings() == nil)
+        #expect(try await runner.getSettings(context: .test) == nil)
     }
 
     @Test func anUnsupportedOptionalExportMeansNotHandled() async throws {
         let runner = try await loadRunner()
 
-        #expect(try await runner.handleUrl("https://example.com") == nil)
+        #expect(try await runner.handleUrl("https://example.com", context: .test) == nil)
     }
 
     @Test func aRefusedImageIsAFailureNotAFallback() async throws {
         let runner = try await loadRunner()
 
         await #expect(throws: ItoError.pluginFailed(function: "handle_image", reason: "Host error: Refused path")) {
-            try await runner.handleImage("../../etc")
+            try await runner.handleImage("../../etc", context: .test)
         }
     }
 
@@ -159,7 +159,7 @@ struct PluginFailureTests {
         let runner = try await loadRunner(withStd: false)
 
         await #expect(throws: ItoError.hostModuleError(domain: "std", message: "StdModule not provided")) {
-            try await runner.getHome()
+            try await runner.getHome(context: .test)
         }
     }
 }
