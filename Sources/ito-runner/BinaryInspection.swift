@@ -14,6 +14,9 @@ public struct PluginBinaryInterface: Sendable, Equatable {
     /// Whether the module has a start section. Instantiating such a module runs plugin code before
     /// the host has called any export, so no host runs one.
     public let hasStartSection: Bool
+    /// The constant `ito_error_version` returns, or 1 when the module doesn't export it: the report
+    /// format the host reads failures in.
+    public let errorProtocolVersion: UInt32
 
     /// The kinds `kindsMask` names, in `MediaKind.allCases` order. Nil when there is no mask, or
     /// it names no kind or one this runner doesn't know.
@@ -24,18 +27,25 @@ public struct PluginBinaryInterface: Sendable, Equatable {
         return MediaKind.allCases.filter { kindsMask & 1 << UInt32($0.wireValue) != 0 }
     }
 
-    public init(abiVersion: Int, imports: [String], kindsMask: UInt32?, hasStartSection: Bool = false) {
+    public init(
+        abiVersion: Int, imports: [String], kindsMask: UInt32?, hasStartSection: Bool = false,
+        errorProtocolVersion: UInt32 = 1
+    ) {
         self.abiVersion = abiVersion
         self.imports = imports
         self.kindsMask = kindsMask
         self.hasStartSection = hasStartSection
+        self.errorProtocolVersion = errorProtocolVersion
     }
 
-    public init(abiVersion: Int, imports: [String], kinds: [MediaKind]?, hasStartSection: Bool = false) {
+    public init(
+        abiVersion: Int, imports: [String], kinds: [MediaKind]?, hasStartSection: Bool = false,
+        errorProtocolVersion: UInt32 = 1
+    ) {
         self.init(
             abiVersion: abiVersion, imports: imports,
             kindsMask: kinds.map { $0.reduce(UInt32(0)) { $0 | 1 << UInt32($1.wireValue) } },
-            hasStartSection: hasStartSection)
+            hasStartSection: hasStartSection, errorProtocolVersion: errorProtocolVersion)
     }
 }
 
@@ -54,16 +64,19 @@ public enum PluginBinaryCompatibility: Sendable, Equatable {
 }
 
 extension ItoRunner {
-    /// Reads a plugin's ABI, imports and kinds mask from its module bytes. The module is parsed,
-    /// never instantiated, so no plugin code runs.
+    /// Reads a plugin's ABI, imports, kinds mask and error-report version from its module bytes.
+    /// The module is parsed, never instantiated, so no plugin code runs.
     ///
     /// An absent `ito_abi_version` means ABI 1. `ito_abi_version` must be a function the module
     /// defines, typed `() -> i32`, whose body is a single `i32.const`; anything else throws, as
     /// does a module that doesn't parse. `ito_supported_kinds` is read for ABI 2 and later, and
     /// never throws: the mask is whatever constant a defined `() -> i32` function returns, and nil
-    /// when the export is missing, imported, mistyped or not a constant. A start section is
-    /// reported in `hasStartSection` rather than thrown, so a caller can still tell which ABI the
-    /// file was built for. Nothing here depends on the range of ABIs this runner supports.
+    /// when the export is missing, imported, mistyped or not a constant. An absent
+    /// `ito_error_version` means version 1; otherwise it must be a defined `() -> i32` function
+    /// whose body is a single positive `i32.const`, and any other export of that name, including
+    /// one that isn't a function, throws. A start section is reported in `hasStartSection` rather
+    /// than thrown, so a caller can still tell which ABI the file was built for. Nothing here
+    /// depends on the range of ABIs this runner supports.
     public static func inspectBinary(_ wasm: [UInt8]) throws -> PluginBinaryInterface {
         var imports = Set<String>()
         var importedFunctionTypes: [UInt32] = []
@@ -71,8 +84,10 @@ extension ItoRunner {
         var isNullaryI32: [Bool] = []  // by type index: is it `() -> i32`
         var abiFunction: UInt32?
         var kindsFunction: UInt32?
+        var errorFunction: UInt32?
         var abiBody: Code?
         var kindsBody: Code?
+        var errorBody: Code?
         var hasStartSection = false
 
         do {
@@ -90,10 +105,18 @@ extension ItoRunner {
                     definedFunctionTypes = typeIndices
                 case .exportSection(let section):
                     for item in section {
-                        guard case .function(let index) = item.descriptor else { continue }
+                        guard case .function(let index) = item.descriptor else {
+                            // A version that isn't a function can't be read; defaulting to 1
+                            // would silently downgrade the failure protocol.
+                            if item.name == errorExportName {
+                                throw ItoError.wasmTrap("\(errorExportName) must be () -> i32")
+                            }
+                            continue
+                        }
                         switch item.name {
                         case abiExportName: abiFunction = index
                         case kindsExportName: kindsFunction = index
+                        case errorExportName: errorFunction = index
                         default: break
                         }
                     }
@@ -103,6 +126,7 @@ extension ItoRunner {
                         let index = importedFunctionTypes.count + offset
                         if abiFunction.map({ Int($0) }) == index { abiBody = body }
                         if kindsFunction.map({ Int($0) }) == index { kindsBody = body }
+                        if errorFunction.map({ Int($0) }) == index { errorBody = body }
                     }
                 case .startSection:
                     hasStartSection = true
@@ -144,8 +168,24 @@ extension ItoRunner {
                 kindsMask = try? constantResult(of: body, export: kindsExportName)
             }
 
+            // Read statically, like the ABI, so loading never calls a plugin export to learn it.
+            var errorVersion: UInt32 = 1
+            if let function = errorFunction {
+                guard let body = errorBody else {
+                    throw ItoError.wasmTrap("\(errorExportName) must be defined in the module, not imported")
+                }
+                guard hasConstantSignature(function) else {
+                    throw ItoError.wasmTrap("\(errorExportName) must be () -> i32")
+                }
+                errorVersion = try constantResult(of: body, export: errorExportName)
+                guard errorVersion > 0, errorVersion <= UInt32(Int32.max) else {
+                    throw ItoError.wasmTrap("\(errorExportName) must return a positive version")
+                }
+            }
+
             return PluginBinaryInterface(
-                abiVersion: abi, imports: imports.sorted(), kindsMask: kindsMask, hasStartSection: hasStartSection)
+                abiVersion: abi, imports: imports.sorted(), kindsMask: kindsMask, hasStartSection: hasStartSection,
+                errorProtocolVersion: errorVersion)
         } catch let error as ItoError {
             throw error
         } catch {
@@ -185,6 +225,7 @@ extension ItoRunner {
 
     private static let abiExportName = "ito_abi_version"
     private static let kindsExportName = "ito_supported_kinds"
+    private static let errorExportName = "ito_error_version"
 
     /// The value of a function whose body is a single `i32.const`, as the SDK's exports are.
     private static func constantResult(of body: Code, export: String) throws -> UInt32 {

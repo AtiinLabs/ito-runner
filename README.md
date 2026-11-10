@@ -137,8 +137,10 @@ use the WASM caller's memory. Keep the runner alive when calling `WasmBridge.rea
 
 ### Error-report protocol versions
 
-The runner reads optional `ito_error_version() -> i32` once when loading a plugin.
-Absent means version 1; a present malformed or trapping export rejects the load.
+The runner reads optional `ito_error_version() -> i32` from the module bytes before loading,
+without calling it. Absent means version 1. When present, it must be a function the module
+defines whose body is a single positive `i32.const`; an imported, computed, mistyped or
+non-function export rejects the load.
 Version 2 reports unsupported operations with the explicit `unsupported` category.
 Other failures remain refusals even if their message says “Unsupported operation.”
 
