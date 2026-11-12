@@ -15,6 +15,12 @@ public enum ChapterEditionsLimits {
     public static let maxCumulativeBytes = 16 * 1024 * 1024
 }
 
+extension ChapterEditionsLimits {
+    /// The fewest bytes one encoded chapter takes: a one-byte key length, eight absent options
+    /// before the kind, the kind, and three absent options after it.
+    static let minChapterBytes = 13
+}
+
 /// A request for one page of alternative uploads of a manga or novel. Plugins read it in this
 /// layout; it is the `ChapterEditionsRequest` of the plugin SDK.
 public struct ChapterEditionsRequest: Codable, Sendable {

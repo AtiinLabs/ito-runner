@@ -15,6 +15,13 @@ public struct ItoPostcardDecoder: Sendable {
         self.abiVersion = abiVersion
     }
 
+    /// Decodes one chapter editions page answering a request of `limit` chapters. The length of its
+    /// `editions` vector is bounded by the limit and by the bytes left, before any element or
+    /// capacity is reserved.
+    func decodeEditionsPage(from data: [UInt8], limit: Int) throws -> ChapterEditionsPage {
+        try decode(ChapterEditionsPage.self, from: data, controls: false, pageLimit: nil, editionsLimit: limit)
+    }
+
     /// Decodes a Postcard-formatted byte array into the specified type.
     /// - Parameters:
     ///   - type: The type to decode.
@@ -22,14 +29,16 @@ public struct ItoPostcardDecoder: Sendable {
     /// - Returns: An instance of the requested type.
     /// - Throws: `ItoError.postcardDecodingError` if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from data: [UInt8]) throws -> T {
-        try decode(type, from: data, controls: false, pageLimit: nil)
+        try decode(type, from: data, controls: false, pageLimit: nil, editionsLimit: nil)
     }
 
     func decodeControls<T: Decodable>(_ type: T.Type, from data: [UInt8], pageLimit: Int? = nil) throws -> T {
-        try decode(type, from: data, controls: true, pageLimit: pageLimit)
+        try decode(type, from: data, controls: true, pageLimit: pageLimit, editionsLimit: nil)
     }
 
-    private func decode<T: Decodable>(_ type: T.Type, from data: [UInt8], controls: Bool, pageLimit: Int?) throws -> T {
+    private func decode<T: Decodable>(
+        _ type: T.Type, from data: [UInt8], controls: Bool, pageLimit: Int?, editionsLimit: Int?
+    ) throws -> T {
         let decoder = _PostcardDecoder(data: data)
 
         let isMap = (type is PostcardMapDecodable.Type)
@@ -37,6 +46,7 @@ public struct ItoPostcardDecoder: Sendable {
         decoder.userInfo[postcardABIVersionKey] = abiVersion
         decoder.userInfo[controlsLimitsKey] = controls
         decoder.userInfo[controlsPageLimitKey] = pageLimit
+        decoder.userInfo[editionsLimitKey] = editionsLimit
 
         if T.self is any PostcardEnum.Type {
             let singleDecoder = try decoder.singleValueContainer() as! _PostcardSingleValueDecoder
@@ -67,6 +77,7 @@ let enumDiscriminantKey = CodingUserInfoKey(rawValue: "ito.postcard.enumDiscrimi
 let postcardABIVersionKey = CodingUserInfoKey(rawValue: "ito.postcard.abiVersion")!
 private let controlsLimitsKey = CodingUserInfoKey(rawValue: "ito.controls.limits")!
 private let controlsPageLimitKey = CodingUserInfoKey(rawValue: "ito.controls.pageLimit")!
+private let editionsLimitKey = CodingUserInfoKey(rawValue: "ito.editions.limit")!
 
 private class _PostcardDecoder: Decoder {
     var codingPath: [CodingKey] = []
@@ -382,6 +393,15 @@ private struct _PostcardUnkeyedDecodingContainer: UnkeyedDecodingContainer {
             // Reject impossible prefixes before Array can reserve attacker-provided capacity.
             guard length <= decoder.data.count - decoder.currentIndex else {
                 throw ItoError.postcardDecodingError("Controls sequence length exceeds remaining bytes.")
+            }
+        }
+        if let limit = decoder.userInfo[editionsLimitKey] as? Int,
+           decoder.codingPath.last?.stringValue == "editions" {
+            guard length <= limit else { throw ChapterEditionsViolation(.pageCount) }
+            // A chapter takes at least this many bytes; refuse impossible prefixes before reserving.
+            let (needed, overflow) = length.multipliedReportingOverflow(by: ChapterEditionsLimits.minChapterBytes)
+            guard !overflow, needed <= decoder.data.count - decoder.currentIndex else {
+                throw ItoError.postcardDecodingError("Chapter editions length exceeds remaining bytes.")
             }
         }
         if let isMap = decoder.userInfo[mapFlagKey] as? Bool, isMap {

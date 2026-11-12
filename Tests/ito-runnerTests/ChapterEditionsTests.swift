@@ -167,6 +167,52 @@ struct ChapterEditionsTests {
         }
     }
 
+    /// Every declared vector length is refused from its prefix, before elements are decoded.
+    @Test func hugeAndImpossibleVectorPrefixesFailBeforeAllocation() async throws {
+        let hugeFitsInt: [UInt8] = [0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0, 0]
+        let overflowsInt: [UInt8] = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0, 0, 0]
+        let impossible: [UInt8] = [100, 0, 0, 0, 0, 0]
+        let overLimit: [UInt8] = [3] + [UInt8](repeating: 0, count: 64)
+        for (bytes, limit) in [(hugeFitsInt, 100), (overLimit, 2)] {
+            let plugin = try await runner([EditionsTestStep(bytes: bytes)])
+            await #expect(throws: editionsViolation(.pageCount)) {
+                try await plugin.getChapterEditions(editionsEntry, limit: limit, context: .test)
+            }
+        }
+        for bytes in [overflowsInt, impossible] {
+            let plugin = try await runner([EditionsTestStep(bytes: bytes)])
+            do {
+                _ = try await plugin.getChapterEditions(editionsEntry, context: .test)
+                Issue.record("A vector prefix the bytes cannot hold was accepted")
+            } catch ItoError.postcardDecodingError {
+            } catch {
+                Issue.record("Unexpected error for an impossible vector prefix")
+            }
+        }
+    }
+
+    /// An entry of a kind the plugin does not serve is a typed request violation, never a silent
+    /// unsupported signal, and the plugin is not called.
+    @Test func anEntryKindThePluginDoesNotServeIsATypedRequestViolation() async throws {
+        let plugin = ItoRunner()
+        try await plugin.loadPlugin(fromBytes: wat2wasm("""
+            (module
+              (memory (export "memory") 1)
+              (global $calls (mut i32) (i32.const 0))
+              \(abi3Prelude(kinds: 0b001))
+              (func (export "alloc") (param i32) (result i32) i32.const 1024)
+              (func (export "dealloc") (param i32 i32))
+              (func (export "calls") (result i32) global.get $calls)
+              (func (export "get_chapter_editions") (param i32 i32) (result i64)
+                global.get $calls i32.const 1 i32.add global.set $calls
+                i64.const 0))
+            """))
+        await #expect(throws: editionsViolation(.requestEntryKind)) {
+            try await plugin.getChapterEditions(.novel(Novel(key: "n", title: "N")), context: .test)
+        }
+        #expect(try await editionsCalls(plugin) == 0)
+    }
+
     @Test func requestBoundsAreRejectedBeforeDispatch() async throws {
         let plugin = try await runner([])
         for limit in [Int.min, -1, 0, 101, Int.max] {

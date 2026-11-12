@@ -926,7 +926,11 @@ public actor ItoRunner {
             if isUnsupported(reported) { return nil }
             throw editionsError(of: name, reported: reported)
         }
-        let page = try Self.decodeCatalog(ChapterEditionsPage.self, from: bytes, function: name)
+        // The vector's length is checked against the request limit before anything is allocated.
+        let page = try Self.reportingEditionsViolations(of: name) {
+            try ItoPostcardDecoder(abiVersion: sharedLayoutABIVersion)
+                .decodeEditionsPage(from: bytes, limit: Int(request.limit))
+        }
         return EditionsPageResponse(page: page, encodedBytes: bytes.count)
     }
 
@@ -941,12 +945,12 @@ public actor ItoRunner {
     /// names, cursors, the constant scope and the caps of `ChapterEditionsLimits`.
     ///
     /// - Returns: Nil when the plugin doesn't take part: the export is absent, or the first page
-    ///   reported Unsupported, or the plugin doesn't serve the entry's kind. Otherwise the whole
-    ///   traversal, only after every page passed. A traversal that reached a cap says so in
-    ///   `termination` and is never `complete`.
+    ///   reported Unsupported. Otherwise the whole traversal, only after every page passed. A
+    ///   traversal that reached a cap says so in `termination` and is never `complete`.
     /// - Throws: Anything else, with nothing of the traversal kept: a request or page that breaks
     ///   the contract (`chapterEditionsViolation`, `catalogContractViolation`), a malformed or
-    ///   oversized response, a failure the plugin reported, Unsupported on a later page (a
+    ///   oversized response, a failure the plugin reported, an entry of a kind the plugin doesn't
+    ///   serve (`request.entry_kind`, before any call), Unsupported on a later page (a
     ///   `pluginFailed` of that category), `networkPolicy`, `CancellationError`, and `pluginReloaded`
     ///   when the plugin is loaded again before the traversal ends. Cursors live only in this call.
     public func getChapterEditions(
@@ -967,7 +971,8 @@ public actor ItoRunner {
         try Self.reportingEditionsViolations(of: name) {
             try ChapterEditionsValidation.request(ChapterEditionsRequest(entry: stripped, cursor: nil, limit: pageLimit))
         }
-        guard supportedKinds.contains(entry.kind) else { return nil }
+        // An entry the plugin cannot serve is the caller's error, not a third kind of "unsupported".
+        guard supportedKinds.contains(entry.kind) else { throw ItoError.chapterEditionsViolation(function: name, violation: .init(.requestEntryKind)) }
 
         // The whole traversal belongs to the plugin loaded now.
         let bound = invocationState.generation
