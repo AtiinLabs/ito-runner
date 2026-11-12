@@ -21,6 +21,11 @@ public enum ItoError: LocalizedError, Equatable {
     /// Host admission authority, never a guest-reported source error.
     case networkPolicy(HostNetworkPolicyOutcome)
 
+    /// Host work the plugin call was waiting on outlived the runner's watchdog deadline
+    /// (`HostCallTimeouts`). The plugin saw a failed request and unwound; this is not a server
+    /// error the plugin reported, and not a policy refusal.
+    case hostCallTimedOut(HostCallKind)
+
     /// Synchronous loading cannot replace the memory of an executing export. Use a fresh runner
     /// for work that overlaps another export.
     case reloadDuringActiveExport
@@ -71,6 +76,10 @@ public enum ItoError: LocalizedError, Equatable {
         case .networkPolicy:
             // Intentionally excludes source/account identifiers and grant material. Hosts localize.
             return "Network access is restricted by host policy."
+        case .hostCallTimedOut(.net):
+            return "A network request took too long to finish."
+        case .hostCallTimedOut(.webview):
+            return "A web page took too long to respond."
         case .controlContractViolation(let function, let violation):
             return "\(function): invalid controls contract: \(violation)"
         case .catalogContractViolation(let function, _), .chapterEditionsViolation(let function, _):
@@ -104,6 +113,7 @@ public enum ItoError: LocalizedError, Equatable {
         case (.reloadDuringActiveExport, .reloadDuringActiveExport): return true
         case (.pluginReloaded, .pluginReloaded): return true
         case (.networkPolicy(let l), .networkPolicy(let r)): return l == r
+        case (.hostCallTimedOut(let l), .hostCallTimedOut(let r)): return l == r
         case (.controlContractViolation(let lf, let lv), .controlContractViolation(let rf, let rv)):
             return lf == rf && lv == rv
         case (.catalogContractViolation(let lf, let lv), .catalogContractViolation(let rf, let rv)):

@@ -92,12 +92,13 @@ struct CallCancellationTests {
         await net.requestCancelled()
     }
 
-    @Test func aRequestPastTheDeadlineReachesThePluginAsAFailedResponse() async throws {
+    @Test func aRequestPastTheDeadlineFailsTheCallAsAHostTimeout() async throws {
         let net = HangingNetModule()
         let runner = try await loadRunner(net: net, timeouts: HostCallTimeouts(net: 0.05, webview: 0.05))
 
-        // The plugin gets a 500 response, fails, and the call reports that failure.
-        await #expect(throws: ItoError.pluginFailed(function: "get_home", reason: nil)) {
+        // The plugin gets a 500 response and fails, but the call reports the watchdog timeout,
+        // not a failure the plugin reported.
+        await #expect(throws: ItoError.hostCallTimedOut(.net)) {
             try await runner.getHome(context: .test)
         }
         await net.requestCancelled()
@@ -231,17 +232,177 @@ struct HostWorkWaitTests {
         #expect(try await result.value == nil)
     }
 
-    @Test func aWebviewLoadPastTheDeadlineThrows() async throws {
+    @Test func aWebviewLoadPastTheDeadlineGivesThePluginNoResultAndRecordsTheTimeout() async throws {
         // Configured before it reaches the queue, then used only there, as in the runner.
         nonisolated(unsafe) let bridge = WasmBridge()
-        bridge.activeCallToken = CallToken(context: .test)
+        let token = CallToken(context: .test)
+        bridge.activeCallToken = token
         bridge.webviewModule = HangingWebviewModule()
         bridge.timeouts = HostCallTimeouts(net: 0.05, webview: 0.05)
 
-        await #expect(throws: ItoError.hostModuleError(domain: "webview", message: "The page took too long to respond.")) {
-            try await onRunnerQueue {
-                try bridge.webviewForPlugin { module, context in try await module.loadUrl(request: WebviewRequest(url: "http://x", script: nil), context: context) }
-            }
+        let result = try await onRunnerQueue {
+            try bridge.webviewForPlugin { module, context in try await module.loadUrl(request: WebviewRequest(url: "http://x", script: nil), context: context) }
+        }
+        #expect(result == nil)
+        #expect(token.terminalOutcome == .hostCallTimedOut(.webview))
+    }
+}
+
+/// A net module that answers at once, counting the requests it was asked for.
+private final class CountingNetModule: NetModule, @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests = 0
+    var count: Int { lock.withLock { requests } }
+
+    func fetch(request: NetRequest, context: NetworkOperationContext) async throws -> NetResponse {
+        lock.withLock { requests += 1 }
+        return NetResponse(status: 200, headers: [:], body: [])
+    }
+}
+
+private extension ItoRunner {
+    /// Runs the `probe` export as a job, as a later call on this runner would.
+    func timeoutProbe() async throws -> Bool {
+        try await performSerialized(context: .test) {
+            try self.executeExport("probe") == [.i32(1)]
+        }
+    }
+}
+
+@Suite("Host call watchdog timeouts", .timeLimit(.minutes(1)))
+struct HostCallTimeoutTests {
+    private let request = NetRequest(url: "http://x", method: "GET", headers: [:], body: nil)
+
+    @Test func theFirstRecordedTerminalOutcomeWins() {
+        let timeoutFirst = CallToken(context: .test)
+        timeoutFirst.recordHostCallTimeout(.net)
+        timeoutFirst.recordPolicyOutcome(.hardUserBlocked)
+        timeoutFirst.cancel()
+        #expect(timeoutFirst.terminalOutcome == .hostCallTimedOut(.net))
+        #expect(timeoutFirst.isCancelled)
+        #expect(timeoutFirst.policyOutcome == nil)
+
+        let cancelFirst = CallToken(context: .test)
+        cancelFirst.cancel()
+        cancelFirst.recordHostCallTimeout(.net)
+        #expect(cancelFirst.terminalOutcome == .cancelled)
+
+        let policyFirst = CallToken(context: .test)
+        policyFirst.recordPolicyOutcome(.hardUserBlocked)
+        policyFirst.recordHostCallTimeout(.webview)
+        #expect(policyFirst.terminalOutcome == .policy(.hardUserBlocked))
+        #expect(policyFirst.policyOutcome == .hardUserBlocked)
+    }
+
+    @Test func aResultThatSettledTheCellFirstIsNotATimeout() {
+        let cell = HostCallCell<Int>()
+        cell.finish(.completed(7))
+        guard case .completed(let value) = cell.wait(until: .now()) else {
+            Issue.record("A result published before the deadline was replaced by a timeout")
+            return
+        }
+        #expect(value == 7)
+    }
+
+    @Test func aResultArrivingAfterTheTimeoutIsDropped() {
+        let cell = HostCallCell<Int>()
+        guard case .timedOut = cell.wait(until: .now()) else {
+            Issue.record("An unsettled cell past its deadline did not time out")
+            return
+        }
+        cell.finish(.completed(7))
+        cell.finish(.failed(HostNetworkPolicyOutcome.hardUserBlocked))
+        guard case .timedOut = cell.wait(until: .now()) else {
+            Issue.record("A late result replaced the timeout")
+            return
+        }
+    }
+
+    @Test func laterHostCallsOfATimedOutCallNeverReachAModule() async throws {
+        let net = CountingNetModule()
+        // Configured before it reaches the queue, then used only there, as in the runner.
+        nonisolated(unsafe) let bridge = WasmBridge()
+        let token = CallToken(context: .test)
+        token.recordHostCallTimeout(.net)
+        bridge.activeCallToken = token
+        bridge.netModule = net
+
+        let response = try await onRunnerQueue { [request] in
+            bridge.fetchForPlugin(request, label: "net_fetch")
+        }
+        #expect(response.status == 500)
+        #expect(response.headers[WasmBridge.transportErrorHeader] == "Host admission refused")
+        let webview = try await onRunnerQueue {
+            try bridge.webviewForPlugin { module, context in try await module.loadUrl(request: WebviewRequest(url: "http://x", script: nil), context: context) }
+        }
+        #expect(webview == nil)
+        #expect(net.count == 0)
+    }
+
+    /// `get_home` makes one network request and returns 0; `get_listing` traps after one request;
+    /// `probe` answers without host work.
+    private static let pluginWAT = """
+        (module
+            (import "ito:core/net" "fetch" (func $fetch (param i32 i32) (result i32)))
+            \(abi3Prelude())
+            (memory (export "memory") 1)
+            (data (i32.const 64) "\\08http://x\\03GET\\00\\00")
+            (global $next (mut i32) (i32.const 1024))
+            (func (export "alloc") (param $size i32) (result i32)
+                (local $pointer i32)
+                global.get $next
+                local.set $pointer
+                global.get $next
+                local.get $size
+                i32.add
+                global.set $next
+                local.get $pointer)
+            (func (export "dealloc") (param i32 i32))
+            (func (export "probe") (result i32) i32.const 1)
+            (func (export "get_home") (result i64)
+                i32.const 64
+                i32.const 15
+                call $fetch
+                drop
+                i64.const 0)
+            (func (export "get_listing") (param i32 i32 i32) (result i64)
+                i32.const 64
+                i32.const 15
+                call $fetch
+                drop
+                unreachable)
+        )
+        """
+
+    private func timingOutRunner() async throws -> (ItoRunner, HangingNetModule) {
+        let net = HangingNetModule()
+        let runner = ItoRunner()
+        await runner.setNetModule(net)
+        await runner.setHostCallTimeouts(HostCallTimeouts(net: 0.05, webview: 0.05))
+        try await runner.loadPlugin(fromBytes: try wat2wasm(Self.pluginWAT))
+        return (runner, net)
+    }
+
+    @Test func aTimedOutCallLeavesTheNextCallUnaffected() async throws {
+        let (runner, net) = try await timingOutRunner()
+        await #expect(throws: ItoError.hostCallTimedOut(.net)) { try await runner.getHome(context: .test) }
+        await net.requestCancelled()
+        #expect(try await runner.timeoutProbe())
+    }
+
+    @Test func aTrapAfterATimeoutStillRetiresTheInstance() async throws {
+        let (runner, net) = try await timingOutRunner()
+        let listing = Listing(id: "all", name: "All", kind: 0)
+        // The timeout decides this call's result, but the trap that followed retires the instance.
+        await #expect(throws: ItoError.hostCallTimedOut(.net)) {
+            try await runner.getMangaList(listing: listing, page: 1)
+        }
+        await net.requestCancelled()
+        do {
+            _ = try await runner.timeoutProbe()
+            Issue.record("A crashed instance ran another call")
+        } catch let error as ItoError {
+            #expect(error.isCrash)
         }
     }
 }
