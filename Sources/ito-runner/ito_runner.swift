@@ -56,9 +56,10 @@ public actor ItoRunner {
     /// if it hasn't started, and cancels host work it is waiting on if it has. Of a host policy
     /// refusal and a cancellation, whichever happened first is the outcome: a refusal recorded
     /// first throws `networkPolicy`, a cancellation first throws `CancellationError`. Either way
-    /// it beats whatever the plugin made of the failed host call, but a guest crash still retires
-    /// that instance: later jobs throw the retained crash without running. A job queued before a
-    /// reload throws `pluginReloaded` without running.
+    /// it beats whatever the plugin made of the failed host call, but a guest crash the job reports
+    /// still retires that instance: later jobs throw the retained crash without running. A trap
+    /// while freeing a result buffer is only logged, so it does not retire the instance. A job
+    /// queued before a reload throws `pluginReloaded` without running.
     func performSerialized<T: Sendable>(context: NetworkOperationContext, _ operation: @escaping () throws -> T) async throws -> T {
         try Task.checkCancellation()
         let token = CallToken(context: context)

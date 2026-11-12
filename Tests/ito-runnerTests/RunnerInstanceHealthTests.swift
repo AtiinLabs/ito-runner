@@ -121,8 +121,14 @@ struct RunnerInstanceHealthTests {
         await #expect(throws: failure) { try await queued.value }
         #expect(try await runner.executeExport("probe_calls") == [.i32(0)])
 
-        // Failed loading cannot revive the retired generation.
+        // Failed loading cannot revive the retired generation: neither a module refused by the
+        // static checks nor one that is only refused after the replacement lock is taken.
         await #expect(throws: (any Error).self) { try await runner.loadPlugin(fromBytes: [1, 2, 3]) }
+        await #expect(throws: failure) { try await runner.healthProbe() }
+        let withoutMemory = try wat2wasm("(module \(abi3Prelude()))")
+        await #expect(throws: ItoError.wasmTrap("Plugin did not export linear 'memory'.")) {
+            try await runner.loadPlugin(fromBytes: withoutMemory)
+        }
         await #expect(throws: failure) { try await runner.healthProbe() }
 
         let replacement = try await Self.runner()
@@ -181,7 +187,7 @@ struct RunnerInstanceHealthTests {
         _ = await retainedFailure(runner, fault: .trap)
     }
 
-    @Test func reloadRejectsAQueuedFailedGenerationBeforeCheckingItsHealth() async throws {
+    @Test func aCallQueuedBeforeReloadingAFailedGenerationThrowsPluginReloaded() async throws {
         let runner = try await Self.runner()
         let entered = AsyncStream<Void>.makeStream()
         let release = DispatchSemaphore(value: 0)
