@@ -82,9 +82,14 @@ public enum ItoError: LocalizedError, Equatable {
             return "A web page took too long to respond."
         case .controlContractViolation(let function, let violation):
             return "\(function): invalid controls contract: \(violation)"
-        case .catalogContractViolation(let function, _), .chapterEditionsViolation(let function, _):
+        case .catalogContractViolation(let function, _):
             // The rule code stays out of the text: it is for diagnostics, not for users.
             return "\(function): the plugin's response broke the data contract."
+        case .chapterEditionsViolation(let function, let violation):
+            // `request.*` rules are the caller's mistake, not the plugin's; the rule code stays out.
+            return violation.rule.rawValue.hasPrefix("request.")
+                ? "\(function): the request broke the chapter editions contract."
+                : "\(function): the plugin's response broke the data contract."
         case .wasmTrap(let reason):
             return "Wasm execution trapped: \(reason)"
         case .memoryOutOfBounds(let offset, let length, let memorySize):

@@ -66,7 +66,7 @@ public struct ChapterEditionsViolation: Error, Equatable, Sendable, CustomString
     /// The rules by their fixed codes. The first seven are the plugin SDK's; the `sequence` rules
     /// are the runner's alone, found across pages.
     public enum Rule: String, Sendable, CaseIterable {
-        /// The request entry is not a manga or novel.
+        /// The request entry is not a manga or novel, or is a kind the loaded plugin doesn't serve.
         case requestEntryKind = "request.entry_kind"
         /// The request limit is outside 1 to `ChapterEditionsLimits.maxLimit`.
         case requestLimit = "request.limit"
@@ -168,7 +168,8 @@ extension MediaEntry {
     }
 }
 
-/// The rules one request or one page obeys on its own, in the order the plugin SDK checks them.
+/// The rules one request or one page obeys on its own. A page's chapter count is checked while
+/// decoding, before these run, so it can be reported ahead of rules the plugin SDK checks first.
 /// Strings are compared as exact UTF-8 bytes.
 enum ChapterEditionsValidation {
     static func cursorWithinBounds(_ cursor: String) -> Bool {
