@@ -264,6 +264,22 @@ struct ChapterEditionsTests {
         #expect(try await editionsCalls(plugin) == 2)
     }
 
+    @Test func aPageCallPastTheWatchdogEndsTheTraversalAsAHostTimeout() async throws {
+        let net = EditionsHangingNet()
+        let plugin = ItoRunner()
+        await plugin.setNetModule(net)
+        await plugin.setHostCallTimeouts(HostCallTimeouts(net: 0.05, webview: 0.05))
+        let steps = [try EditionsTestStep(editionsPage("a", cursor: "next")), try EditionsTestStep(editionsPage("b", completeness: .complete))]
+        try await plugin.loadPlugin(fromBytes: editionsPlugin(steps, fetchAt: 1))
+        // The second page's request outlives the deadline: the timeout ends the traversal as it
+        // is, never as unsupported, an empty page or a partial result built from the first page.
+        await #expect(throws: ItoError.hostCallTimedOut(.net)) {
+            try await plugin.getChapterEditions(editionsEntry, context: .test)
+        }
+        await net.waitForCancellation()
+        #expect(try await editionsCalls(plugin) == 2)
+    }
+
     @Test func guestCannotSwallowPolicyInvalidationOnLaterPage() async throws {
         let net = EditionsNet(deniedCall: 2)
         let plugin = try await runner([try EditionsTestStep(editionsPage("a", cursor: "next")), try EditionsTestStep(editionsPage("b", completeness: .complete))], net: net, fetchAt: -1)
