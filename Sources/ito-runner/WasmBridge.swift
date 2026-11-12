@@ -93,12 +93,13 @@ public class WasmBridge {
 
     /// Runs a plugin's network request on the net module and waits for it. A failure, a
     /// cancelled call or a request past the watchdog deadline reaches the plugin as a 500
-    /// response it handles like any server error, so its export finishes normally.
+    /// response it handles like any server error, so its export finishes normally. A request past
+    /// the deadline is also recorded on the call, which then reports `hostCallTimedOut(.net)`.
     func fetchForPlugin(_ request: NetRequest, label: String) -> NetResponse {
         guard let token = activeCallToken else {
             return Self.transportFailure(Self.missingContextText, label: label, includeBody: false)
         }
-        if token.isCancelled || token.policyOutcome != nil {
+        if token.terminalOutcome != nil {
             return Self.transportFailure(Self.admissionRefusedText, label: label, includeBody: false)
         }
         let context = token.context
@@ -123,6 +124,9 @@ public class WasmBridge {
         case .cancelled:
             failure = Self.cancelledText
         case .timedOut:
+            // Only a timeout that settled the host call reaches here: a result that arrived first
+            // won the cell and is returned above. Recorded before the export continues.
+            token.recordHostCallTimeout(.net)
             failure = Self.timedOutText
         }
         return Self.transportFailure(failure, label: label, includeBody: true)
@@ -198,17 +202,17 @@ public class WasmBridge {
     /// evaluates to nothing. SDK versions before 0.2.1 treat zero as no result too.
     static let noWebviewResult = UInt32(bitPattern: -1)
 
-    /// Runs a web view operation and waits for it. Returns nil when the call was cancelled or the
-    /// host refused it by policy: the plugin then gets `noWebviewResult` it handles as an error and
-    /// unwinds normally, where a thrown error would abort it mid-call. The outer caller still
-    /// receives the recorded policy outcome. Throws on failure or timeout.
+    /// Runs a web view operation and waits for it. Returns nil when the call was cancelled, the
+    /// host refused it by policy or it outlived the watchdog deadline: the plugin then gets
+    /// `noWebviewResult` it handles as an error and unwinds normally, where a thrown error would
+    /// abort it mid-call. The outer caller still receives the recorded outcome. Throws on failure.
     func webviewForPlugin<Value: Sendable>(
         _ work: @escaping @Sendable (any WebviewModule, NetworkOperationContext) async throws -> Value
     ) throws -> Value? {
         guard let token = activeCallToken else {
             throw ItoError.hostModuleError(domain: "webview", message: Self.missingContextText)
         }
-        if token.isCancelled || token.policyOutcome != nil { return nil }
+        if token.terminalOutcome != nil { return nil }
         let context = token.context
         let module = webviewModule
         let outcome = waitForHostWork(token: token, timeout: timeouts.webview) { () async throws -> Value in
@@ -229,7 +233,8 @@ public class WasmBridge {
         case .cancelled:
             return nil
         case .timedOut:
-            throw ItoError.hostModuleError(domain: "webview", message: "The page took too long to respond.")
+            token.recordHostCallTimeout(.webview)
+            return nil
         }
     }
 
