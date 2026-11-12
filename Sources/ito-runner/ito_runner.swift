@@ -54,9 +54,9 @@ public actor ItoRunner {
 
     /// Runs one job on the runner's queue, one at a time. Cancelling the caller's task skips the job
     /// if it hasn't started, and cancels host work it is waiting on if it has. Of a host policy
-    /// refusal and a cancellation, whichever happened first is the outcome: a refusal recorded
-    /// first throws `networkPolicy`, a cancellation first throws `CancellationError`. Either way
-    /// it beats whatever the plugin made of the failed host call, but a guest crash the job reports
+    /// refusal, a cancellation and a host call that outlived its watchdog deadline, whichever was
+    /// recorded first is the outcome: `networkPolicy`, `CancellationError` or `hostCallTimedOut`.
+    /// It beats whatever the plugin made of the failed host call, but a guest crash the job reports
     /// still retires that instance: later jobs throw the retained crash without running. A trap
     /// while freeing a result buffer is only logged, so it does not retire the instance. A job
     /// queued before a reload throws `pluginReloaded` without running.
@@ -87,10 +87,8 @@ public actor ItoRunner {
                         }
                         bridge?.activeCallToken = nil
                         bridge?.clearOperationState()
-                        if let outcome = token.policyOutcome {
-                            result = .failure(ItoError.networkPolicy(outcome))
-                        } else if token.isCancelled {
-                            result = .failure(CancellationError())
+                        if let terminal = token.terminalOutcome {
+                            result = .failure(terminal.error)
                         } else {
                             result = guestResult
                         }
@@ -565,11 +563,10 @@ public actor ItoRunner {
                 entry = .available(try decodeControls("get_search_capabilities") { try ControlsDecoder.searchCapabilities(bytes) })
             } else { entry = .absent }
         } catch let error as ItoError where !error.isCrash {
-            // Cancellation and policy are decided after the entry is built, below, never cached.
+            // Cancellation, policy and host-call timeouts are decided below, never cached.
             entry = .failed(error)
         }
-        if let outcome = bridge?.activeCallToken?.policyOutcome { throw ItoError.networkPolicy(outcome) }
-        if bridge?.activeCallToken?.isCancelled == true { throw CancellationError() }
+        if let terminal = bridge?.activeCallToken?.terminalOutcome { throw terminal.error }
         capabilitiesByKind[kind] = entry
         return entry
     }
