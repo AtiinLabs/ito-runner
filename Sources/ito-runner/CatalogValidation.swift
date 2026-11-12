@@ -69,7 +69,7 @@ public struct CatalogContractViolation: Error, Equatable, Sendable, CustomString
 
 /// A string compared and hashed by its UTF-8 bytes alone, without the canonical equivalence Swift
 /// gives `String`, and without copying the bytes out.
-private struct ExactBytes: Hashable {
+struct ExactBytes: Hashable {
     let value: String
 
     init(_ value: String) { self.value = value }

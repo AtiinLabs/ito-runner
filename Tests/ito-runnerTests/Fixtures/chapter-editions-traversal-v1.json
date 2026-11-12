@@ -1,0 +1,171 @@
+{
+  "contract": "ito-chapter-editions-traversal",
+  "version": 1,
+  "notes": [
+    "Runner-owned: the multi-page sequences the runner checks across pages. Pages are the postcard ChapterEditionsPage bytes of chapter-editions-v1.json, whose page.mixed_nonterminal is the first page of most cases here. A host asks with the case's limit and, after a page with a next_cursor, that cursor.",
+    "outcome is ok, or violation:<code>. For ok, termination, scope and completeness name what the aggregate reports, keys are the exact keys in order and kinds their content kinds. violation codes are request.*, page.* and sequence.* rules of ChapterEditionsViolation or the duplicate.key and scanlator.conflict rules of the chapter catalog. calls is how many pages the host requests before the case ends.",
+    "Every case starts at the first page; pages[n] answers the n-th request. A case ends at its first violation or when a page has no next_cursor."
+  ],
+  "cases": [
+    {
+      "name": "traversal.partial_to_complete",
+      "limit": 2,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202",
+        "0102743201094368617074657220330001000000000000084000010103672d310b416c706861205363616e73000102656e00020001040001056375722d330202",
+        "01026932010947616c6c65727920320001000000000000104000010103672d320a42657461205363616e73000102656e000000010601027232000204"
+      ],
+      "expect": {
+        "outcome": "ok",
+        "termination": "exhausted",
+        "scope": "visible",
+        "completeness": "complete",
+        "keys": [
+          "t1",
+          "i1",
+          "t2",
+          "i2"
+        ],
+        "kinds": [
+          "text",
+          "images",
+          "text",
+          "images"
+        ],
+        "calls": 3
+      }
+    },
+    {
+      "name": "traversal.terminal_partial_stays_partial",
+      "limit": 2,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202",
+        "01026932010947616c6c65727920320001000000000000104000010103672d320a42657461205363616e73000102656e000000010601027232000202"
+      ],
+      "expect": {
+        "outcome": "ok",
+        "termination": "exhausted",
+        "scope": "visible",
+        "completeness": "partial",
+        "keys": [
+          "t1",
+          "i1",
+          "i2"
+        ],
+        "kinds": [
+          "text",
+          "images",
+          "images"
+        ],
+        "calls": 2
+      }
+    },
+    {
+      "name": "traversal.single_terminal_page",
+      "limit": 100,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e000000010201027231000404"
+      ],
+      "expect": {
+        "outcome": "ok",
+        "termination": "exhausted",
+        "scope": "allEligible",
+        "completeness": "complete",
+        "keys": [
+          "t1",
+          "i1"
+        ],
+        "kinds": [
+          "text",
+          "images"
+        ],
+        "calls": 1
+      }
+    },
+    {
+      "name": "traversal.cross_page_duplicate_key",
+      "limit": 2,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202",
+        "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000000204"
+      ],
+      "expect": {
+        "outcome": "violation:duplicate.key",
+        "calls": 2
+      }
+    },
+    {
+      "name": "traversal.scanlator_conflict",
+      "limit": 2,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202",
+        "0102743301094368617074657220340001000000000000144000010103672d310d416c7068612052656e616d6564000102656e000200010800000204"
+      ],
+      "expect": {
+        "outcome": "violation:scanlator.conflict",
+        "calls": 2
+      }
+    },
+    {
+      "name": "traversal.scope_changed",
+      "limit": 2,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202",
+        "01026932010947616c6c65727920320001000000000000104000010103672d320a42657461205363616e73000102656e000000010601027232000404"
+      ],
+      "expect": {
+        "outcome": "violation:sequence.scope_changed",
+        "calls": 2
+      }
+    },
+    {
+      "name": "traversal.cursor_repeated",
+      "limit": 2,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202",
+        "0102743201094368617074657220330001000000000000084000010103672d310b416c706861205363616e73000102656e00020001040001056375722d320202",
+        "01026932010947616c6c65727920320001000000000000104000010103672d320a42657461205363616e73000102656e000000010601027232000204"
+      ],
+      "expect": {
+        "outcome": "violation:sequence.cursor_repeated",
+        "calls": 2
+      }
+    },
+    {
+      "name": "traversal.empty_nonterminal_page",
+      "limit": 2,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202",
+        "0001056375722d330202",
+        "01026932010947616c6c65727920320001000000000000104000010103672d320a42657461205363616e73000102656e000000010601027232000204"
+      ],
+      "expect": {
+        "outcome": "violation:page.no_progress",
+        "calls": 2
+      }
+    },
+    {
+      "name": "traversal.nonterminal_complete",
+      "limit": 2,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202",
+        "0102743201094368617074657220330001000000000000084000010103672d310b416c706861205363616e73000102656e00020001040001056375722d330204"
+      ],
+      "expect": {
+        "outcome": "violation:page.completeness",
+        "calls": 2
+      }
+    },
+    {
+      "name": "traversal.page_over_limit",
+      "limit": 1,
+      "pages": [
+        "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202"
+      ],
+      "expect": {
+        "outcome": "violation:page.count",
+        "calls": 1
+      }
+    }
+  ]
+}

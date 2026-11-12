@@ -1,0 +1,281 @@
+{
+  "contract": "ito-chapter-editions",
+  "version": 1,
+  "notes": [
+    "Bytes are postcard. ChapterEditionsRequest is {entry: MediaEntry, cursor: Option<String>, limit: u32 varint}; ChapterEditionsPage is {editions: Vec<Chapter>, next_cursor: Option<String>, scope: CatalogScope, completeness: CatalogCompleteness}. Chapter is the ABI 3 layout pinned by catalog-v3.json; there is no second edition schema.",
+    "Entries inside requests use the MediaEntry bytes of catalog-v3.json (variant 0 manga, 1 anime, 2 novel). A request entry reaches the source without chapters or catalog.",
+    "An entry with repeat_hex is prefix hex, then repeat_hex repeated repeat_count times, then suffix_hex; entries without it are just hex.",
+    "expect is ok, violation:<code>, or decode_error. violation: values for requests are SDK-local classifications; the export reports every bad request as Error::Host with the fixed message request.invalid before source code runs. Page violations are reported as ErrorCategory::ContractViolation with the code as the message.",
+    "An entry with canonical_hex is accepted as written; it decodes to the same value as the built case and re-encodes to canonical_hex. Unknown CatalogScope and CatalogCompleteness discriminants decode to Unknown.",
+    "Page check order: next_cursor bounds (page.cursor), count against the request limit (page.count), nonterminal completeness (page.completeness), progress (page.no_progress), then the chapter rules of catalog-v3.json (length.*, number.*, duplicate.key, scanlator.conflict). The first violation wins.",
+    "A present cursor is 1 to max_cursor_bytes UTF-8 bytes, compared as exact bytes, kept in memory only and never logged. A source binds it to the exact title and the settings, account and filters in effect.",
+    "Page validation applies to one page. The host validates across pages: byte-exact key dedupe, metadata and id-name consistency, repeated cursors, constant scope, and the run caps in run_limits. Partial to complete at the last page is valid; complete with a cursor is not."
+  ],
+  "codes": [
+    "request.entry_kind",
+    "request.limit",
+    "request.cursor",
+    "page.cursor",
+    "page.count",
+    "page.completeness",
+    "page.no_progress"
+  ],
+  "limits": {
+    "max_limit": 100,
+    "max_cursor_bytes": 4096,
+    "max_response_bytes": 16777216
+  },
+  "run_limits": {
+    "max_rows": 20000,
+    "max_pages": 256,
+    "max_cumulative_bytes": 16777216
+  },
+  "requests": [
+    {
+      "name": "request.manga_first_page",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d0200000200000064",
+      "expect": "ok"
+    },
+    {
+      "name": "request.manga_with_cursor",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d02000002000001056375722d3114",
+      "expect": "ok"
+    },
+    {
+      "name": "request.novel_with_cursor",
+      "type": "ChapterEditionsRequest",
+      "hex": "02016e014e0101014100010541626f7574000000040200000001056375722d3101",
+      "expect": "ok"
+    },
+    {
+      "name": "request.manga_with_chapters_and_catalog",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d020000020101026331000001000000000000f03f00010103672d310b416c706861205363616e730000000200000001020201056375722d310a",
+      "expect": "ok",
+      "note": "the SDK strips the chapter list and catalog before calling the source"
+    },
+    {
+      "name": "request.anime_entry",
+      "type": "ChapterEditionsRequest",
+      "hex": "010161014101010653747564696f000000000200000101026531010550696c6f74010000c03f0100000040fc54d9410001026a61010000000a",
+      "expect": "violation:request.entry_kind"
+    },
+    {
+      "name": "request.limit_zero",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d0200000200000000",
+      "expect": "violation:request.limit"
+    },
+    {
+      "name": "request.limit_101",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d0200000200000065",
+      "expect": "violation:request.limit"
+    },
+    {
+      "name": "request.limit_max_u32",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d02000002000000ffffffff0f",
+      "expect": "violation:request.limit"
+    },
+    {
+      "name": "request.cursor_empty",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d02000002000001000a",
+      "expect": "violation:request.cursor"
+    },
+    {
+      "name": "request.cursor_at_limit",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d020000020000018020",
+      "repeat_hex": "61",
+      "repeat_count": 4096,
+      "suffix_hex": "0a",
+      "expect": "ok"
+    },
+    {
+      "name": "request.cursor_oversized",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d020000020000018120",
+      "repeat_hex": "61",
+      "repeat_count": 4097,
+      "suffix_hex": "0a",
+      "expect": "violation:request.cursor"
+    },
+    {
+      "name": "request.cursor_multibyte_oversized",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d020000020000018220",
+      "repeat_hex": "e282ac",
+      "repeat_count": 1366,
+      "suffix_hex": "0a",
+      "expect": "violation:request.cursor"
+    },
+    {
+      "name": "request.cursor_multibyte_at_limit",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d02000002000001ff1f",
+      "repeat_hex": "e282ac",
+      "repeat_count": 1365,
+      "suffix_hex": "0a",
+      "expect": "ok"
+    },
+    {
+      "name": "request.trailing_byte",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d020000020000000a00",
+      "expect": "decode_error"
+    },
+    {
+      "name": "request.truncated",
+      "type": "ChapterEditionsRequest",
+      "hex": "00016d014d0101014100010541626f757401010354616700011668747470733a2f2f6578616d706c652e746573742f6d02000002000001056375722d31",
+      "expect": "decode_error"
+    }
+  ],
+  "pages": [
+    {
+      "name": "page.mixed_nonterminal",
+      "type": "ChapterEditionsPage",
+      "limit": 2,
+      "hex": "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e00000001020102723101056375722d320202",
+      "expect": "ok",
+      "note": "a text chapter and an image chapter in one page"
+    },
+    {
+      "name": "page.terminal_complete",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e000000010201027231000404",
+      "expect": "ok"
+    },
+    {
+      "name": "page.terminal_visible_complete",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000000204",
+      "expect": "ok"
+    },
+    {
+      "name": "page.terminal_partial",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000000202",
+      "expect": "ok"
+    },
+    {
+      "name": "page.terminal_unknown",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000000000",
+      "expect": "ok"
+    },
+    {
+      "name": "page.terminal_empty",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "00000000",
+      "expect": "ok"
+    },
+    {
+      "name": "page.empty_with_cursor",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "000101630202",
+      "expect": "violation:page.no_progress"
+    },
+    {
+      "name": "page.cursor_complete",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e0002000100000101630204",
+      "expect": "violation:page.completeness"
+    },
+    {
+      "name": "page.cursor_unknown_completeness",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e0002000100000101630200",
+      "expect": "violation:page.completeness"
+    },
+    {
+      "name": "page.cursor_empty",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e00020001000001000202",
+      "expect": "violation:page.cursor"
+    },
+    {
+      "name": "page.cursor_at_limit",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000018020",
+      "repeat_hex": "61",
+      "repeat_count": 4096,
+      "suffix_hex": "0202",
+      "expect": "ok"
+    },
+    {
+      "name": "page.cursor_oversized",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000018120",
+      "repeat_hex": "61",
+      "repeat_count": 4097,
+      "suffix_hex": "0202",
+      "expect": "violation:page.cursor"
+    },
+    {
+      "name": "page.over_limit",
+      "type": "ChapterEditionsPage",
+      "limit": 1,
+      "hex": "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e0000000102010272310101630202",
+      "expect": "violation:page.count"
+    },
+    {
+      "name": "page.over_limit_terminal",
+      "type": "ChapterEditionsPage",
+      "limit": 1,
+      "hex": "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e000000010201027231000204",
+      "expect": "violation:page.count"
+    },
+    {
+      "name": "page.duplicate_keys",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000027431000000000000000002000000000202",
+      "expect": "violation:duplicate.key"
+    },
+    {
+      "name": "page.scanlator_conflict",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "0202633100000000010103672d310b416c706861205363616e730000000200000002633200000000010103672d310d416c7068612052656e616d656400000002000000000202",
+      "expect": "violation:scanlator.conflict"
+    },
+    {
+      "name": "page.key_empty",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "0100000000000000000002000000000202",
+      "expect": "violation:length.key"
+    },
+    {
+      "name": "page.count_before_completeness",
+      "type": "ChapterEditionsPage",
+      "limit": 1,
+      "hex": "02027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000026931010747616c6c6572790001000000000000004000010103672d320a42657461205363616e73000102656e0000000102010272310101630204",
+      "expect": "violation:page.count"
+    },
+    {
+      "name": "page.unknown_enum_values_decode_to_unknown",
+      "type": "ChapterEditionsPage",
+      "limit": 100,
+      "hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000000606",
+      "expect": "ok",
+      "canonical_hex": "01027431010850726f6c6f6775650001000000000000f03f00010103672d310b416c706861205363616e73000102656e000200010000000000"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+chapter-editions-v1.json is a byte-identical copy of fixtures/chapter-editions-v1.json at
+ito-rs@f15163e0e27d251fa3fffdd98e9f42204f52fedf (AtiinLabs/ito-rs #19).
+
+sha256  efbc2d1dc1328b9a42bbff50a671177595de1212042752325e7411a220a31357
+bytes   12779
+
+The file is JSON, which has no room for a header, so its origin is recorded here. Do not edit the
+fixture in place: a change to the contract lands in ito-rs first and the file is copied again with
+this note updated. ChapterEditionsFixtureTests checks the digest above.
+
+chapter-editions-traversal-v1.json is owned by this repository: the multi-page sequences the runner
+checks across pages, built from page bytes laid out as chapter-editions-v1.json lays them out.

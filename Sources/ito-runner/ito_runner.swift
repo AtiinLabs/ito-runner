@@ -54,14 +54,17 @@ public actor ItoRunner {
     /// refusal and a cancellation, whichever happened first is the outcome: a refusal recorded
     /// first throws `networkPolicy`, a cancellation first throws `CancellationError`. Either way
     /// it beats whatever the plugin made of the failed host call. A job queued before a reload
-    /// throws `pluginReloaded` without running.
-    func performSerialized<T: Sendable>(context: NetworkOperationContext, _ operation: @escaping () throws -> T) async throws -> T {
+    /// throws `pluginReloaded` without running; so does one bound to a plugin generation
+    /// (`boundTo`) that a reload has replaced, whenever it was queued.
+    func performSerialized<T: Sendable>(
+        context: NetworkOperationContext, boundTo boundGeneration: UUID? = nil, _ operation: @escaping () throws -> T
+    ) async throws -> T {
         try Task.checkCancellation()
         let token = CallToken(context: context)
         // Read on the actor: the queue never touches runner state after resuming the caller.
         let bridge = self.bridge
         let state = invocationState
-        let generation = state.generation
+        let generation = boundGeneration ?? state.generation
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 executionQueue.async {
@@ -408,7 +411,10 @@ public actor ItoRunner {
     /// bytes, or nil when the export returned 0. The SDK returns 0 both for "nothing" (no settings,
     /// an unsupported image) and for failures; a failure is told apart by what the plugin reported,
     /// see `failure(of:)`.
-    private func callPacked(_ name: String, _ arguments: [ExportArgument] = [], limit: ResponseLimit? = nil) throws -> [UInt8]? {
+    private func callPacked(
+        _ name: String, _ arguments: [ExportArgument] = [], limit: ResponseLimit? = nil,
+        remainingEditionsBytes: Int? = nil
+    ) throws -> [UInt8]? {
         var allocations: [(ptr: Int32, len: Int32)] = []
         defer {
             for allocation in allocations {
@@ -446,6 +452,9 @@ public actor ItoRunner {
         }
         if let limit, responseLength > limit.maxBytes {
             throw limit.exceeded(in: name)
+        }
+        if let remainingEditionsBytes, responseLength > remainingEditionsBytes {
+            throw EditionsByteBound()
         }
         return try readMemory(offset: responsePointer, length: responseLength)
     }
@@ -853,6 +862,141 @@ public actor ItoRunner {
             return try self.callDecoding(
                 [Page].self, "get_chapter_pages",
                 [.bytes(try Self.encoder.encode(entry.resolvingChapterKinds())), .bytes(try Self.encoder.encode(chapter))])
+        }
+    }
+
+    // MARK: - Chapter editions
+
+    private static let editionsExport = "get_chapter_editions"
+
+    /// The response fits the page limit, but not the traversal's remaining encoded-byte budget.
+    private struct EditionsByteBound: Error {}
+
+    /// One page as the plugin returned it, and how many bytes it took.
+    private struct EditionsPageResponse: Sendable {
+        let page: ChapterEditionsPage
+        let encodedBytes: Int
+    }
+
+    /// Runs a check of editions that reports its violations as the failure of `function`.
+    private static func reportingEditionsViolations<T>(of function: String, _ body: () throws -> T) throws -> T {
+        do { return try body() }
+        catch let violation as ChapterEditionsViolation {
+            throw ItoError.chapterEditionsViolation(function: function, violation: violation)
+        }
+        catch let violation as CatalogContractViolation {
+            throw ItoError.catalogContractViolation(function: function, violation: violation)
+        }
+    }
+
+    /// The error for a failure `get_chapter_editions` reported. A contract violation keeps only the
+    /// rule it names, when this runner lists it.
+    private func editionsError(of function: String, reported: (reason: String, category: PluginErrorCategory)) -> ItoError {
+        if reported.category == .contractViolation,
+           let violation = ChapterEditionsViolation(reportedCode: reported.reason) {
+            return .chapterEditionsViolation(function: function, violation: violation)
+        }
+        return itoError(of: function, reported: reported)
+    }
+
+    /// Runs one `get_chapter_editions` call. Nil means the export is absent or reported Unsupported.
+    /// A return of 0 without a report is a failure, not a refusal to take part.
+    private func callChapterEditionsPage(_ request: ChapterEditionsRequest, remainingBytes: Int) throws -> EditionsPageResponse? {
+        let name = Self.editionsExport
+        guard let exported = instance?.exports[name] else { return nil }
+        guard case .function(let function) = exported,
+              function.type.parameters == [.i32, .i32], function.type.results == [.i64] else {
+            throw ItoError.wasmTrap("Invalid chapter editions export signature: \(name)")
+        }
+        guard let bytes = try callPacked(
+            name, [.bytes(try Self.encoder.encode(request))], limit: .catalog,
+            remainingEditionsBytes: remainingBytes
+        ) else {
+            guard let reported = try reportedFailure() else {
+                throw ItoError.pluginFailed(function: name, reason: nil, category: .other)
+            }
+            if isUnsupported(reported) { return nil }
+            throw editionsError(of: name, reported: reported)
+        }
+        let page = try Self.decodeCatalog(ChapterEditionsPage.self, from: bytes, function: name)
+        return EditionsPageResponse(page: page, encodedBytes: bytes.count)
+    }
+
+    /// Lists the alternative uploads of `entry`'s chapters, a manga's or a novel's, by calling the
+    /// plugin's optional `get_chapter_editions` export page after page until it has no more. Call it
+    /// only for an explicit user action.
+    ///
+    /// `limit` is the most chapters a page may carry, 1 to `ChapterEditionsLimits.maxLimit`. The
+    /// entry reaches the plugin without its chapters and catalog. Pages are fetched one at a time
+    /// under `context`, whose operation stays the same and whose generation is fresh for every page,
+    /// and the runner owns every check across them (see `ChapterEditionsResult`): exact keys, group
+    /// names, cursors, the constant scope and the caps of `ChapterEditionsLimits`.
+    ///
+    /// - Returns: Nil when the plugin doesn't take part: the export is absent, or the first page
+    ///   reported Unsupported, or the plugin doesn't serve the entry's kind. Otherwise the whole
+    ///   traversal, only after every page passed. A traversal that reached a cap says so in
+    ///   `termination` and is never `complete`.
+    /// - Throws: Anything else, with nothing of the traversal kept: a request or page that breaks
+    ///   the contract (`chapterEditionsViolation`, `catalogContractViolation`), a malformed or
+    ///   oversized response, a failure the plugin reported, Unsupported on a later page (a
+    ///   `pluginFailed` of that category), `networkPolicy`, `CancellationError`, and `pluginReloaded`
+    ///   when the plugin is loaded again before the traversal ends. Cursors live only in this call.
+    public func getChapterEditions(
+        _ entry: MediaEntry, limit: Int = ChapterEditionsLimits.maxLimit, context: NetworkOperationContext
+    ) async throws -> ChapterEditionsResult? {
+        try await traverseChapterEditions(entry, limit: limit, context: context, afterPage: nil)
+    }
+
+    /// `getChapterEditions`, calling `afterPage` with the number of pages taken so far each time
+    /// another page is due, so a test can act between pages.
+    func traverseChapterEditions(
+        _ entry: MediaEntry, limit: Int, context: NetworkOperationContext,
+        afterPage: (@Sendable (Int) async -> Void)?
+    ) async throws -> ChapterEditionsResult? {
+        let name = Self.editionsExport
+        let pageLimit = UInt32(clamping: limit)
+        let stripped = entry.withoutChapters()
+        try Self.reportingEditionsViolations(of: name) {
+            try ChapterEditionsValidation.request(ChapterEditionsRequest(entry: stripped, cursor: nil, limit: pageLimit))
+        }
+        guard supportedKinds.contains(entry.kind) else { return nil }
+
+        // The whole traversal belongs to the plugin loaded now.
+        let bound = invocationState.generation
+        var sequence = ChapterEditionsSequence(limit: pageLimit)
+        var cursor: String?
+        while true {
+            try Task.checkCancellation()
+            guard invocationState.generation == bound else { throw ItoError.pluginReloaded }
+            let request = ChapterEditionsRequest(entry: stripped, cursor: cursor, limit: pageLimit)
+            let remainingBytes = ChapterEditionsLimits.maxCumulativeBytes - sequence.encodedBytes
+            let response: EditionsPageResponse?
+            do {
+                response = try await performSerialized(context: context.withGeneration(UUID()), boundTo: bound) {
+                    try self.callChapterEditionsPage(request, remainingBytes: remainingBytes)
+                }
+            } catch is EditionsByteBound {
+                try Task.checkCancellation()
+                guard invocationState.generation == bound else { throw ItoError.pluginReloaded }
+                _ = sequence.stop(at: .bytes)
+                return sequence.result()
+            }
+            try Task.checkCancellation()
+            guard invocationState.generation == bound else { throw ItoError.pluginReloaded }
+            guard let response else {
+                if sequence.pageCount == 0 { return nil }
+                throw ItoError.pluginFailed(function: name, reason: nil, category: .unsupported)
+            }
+            let step = try Self.reportingEditionsViolations(of: name) {
+                try sequence.accept(response.page, encodedBytes: response.encodedBytes)
+            }
+            switch step {
+            case .finished:
+                return sequence.result()
+            case .next(let next):
+                cursor = next
+                await afterPage?(sequence.pageCount)
+            }
         }
     }
 
