@@ -201,6 +201,19 @@ struct HostContextTests {
         }
         let runner = try await Self.runner(net, trap: true)
         await #expect(throws: ItoError.networkPolicy(.hardUserBlocked)) { try await Self.pages(runner, denied) }
+        // Policy wins presentation, but the actual guest trap still retires this generation.
+        do {
+            _ = try await runner.getSearchCapabilities(kind: .manga, context: denied)
+            Issue.record("A trapped instance accepted a subsequent capability call")
+            return
+        } catch let error as ItoError {
+            guard case .wasmTrap = error else {
+                Issue.record("Expected the retained guest trap")
+                return
+            }
+        }
+        #expect(await net.contexts.count == 1)
+        try await runner.loadPlugin(fromBytes: Self.wasm())
         await #expect(throws: ItoError.networkPolicy(.hardUserBlocked)) {
             try await runner.getSearchCapabilities(kind: .manga, context: denied)
         }
