@@ -42,6 +42,9 @@ public actor ItoRunner {
         let lock = NSLock()
         // Written only by actor-isolated loading under lock; queue reads hold the same lock.
         var generation = UUID()
+        // A guest crash retires this generation even when cancellation or policy wins presentation.
+        // Read and written only while holding lock, alongside execution and replacement.
+        var failure: ItoError?
     }
     private let invocationState = InvocationState()
 
@@ -53,8 +56,10 @@ public actor ItoRunner {
     /// if it hasn't started, and cancels host work it is waiting on if it has. Of a host policy
     /// refusal and a cancellation, whichever happened first is the outcome: a refusal recorded
     /// first throws `networkPolicy`, a cancellation first throws `CancellationError`. Either way
-    /// it beats whatever the plugin made of the failed host call. A job queued before a reload
-    /// throws `pluginReloaded` without running.
+    /// it beats whatever the plugin made of the failed host call, but a guest crash the job reports
+    /// still retires that instance: later jobs throw the retained crash without running. A trap
+    /// while freeing a result buffer is only logged, so it does not retire the instance. A job
+    /// queued before a reload throws `pluginReloaded` without running.
     func performSerialized<T: Sendable>(context: NetworkOperationContext, _ operation: @escaping () throws -> T) async throws -> T {
         try Task.checkCancellation()
         let token = CallToken(context: context)
@@ -71,10 +76,15 @@ public actor ItoRunner {
                         result = .failure(CancellationError())
                     } else if generation != state.generation {
                         result = .failure(ItoError.pluginReloaded)
+                    } else if let failure = state.failure {
+                        result = .failure(failure)
                     } else {
                         bridge?.clearOperationState()
                         bridge?.activeCallToken = token
                         let guestResult = Result { try operation() }
+                        if case .failure(let error as ItoError) = guestResult, error.isCrash {
+                            state.failure = error
+                        }
                         bridge?.activeCallToken = nil
                         bridge?.clearOperationState()
                         if let outcome = token.policyOutcome {
@@ -237,6 +247,7 @@ public actor ItoRunner {
             self.supportedKinds = kinds
             self.capabilitiesByKind.removeAll()
             invocationState.generation = UUID()
+            invocationState.failure = nil
 
         } catch let error as ItoError {
             throw error

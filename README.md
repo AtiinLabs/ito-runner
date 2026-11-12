@@ -59,10 +59,11 @@ allowlist of `URLError` codes; host error descriptions are never copied to the p
 
 Of a policy refusal and a cancellation, whichever happened first decides the outer result
 (`ItoError.networkPolicy` or `CancellationError`). Either beats the plugin's own failure or
-success. A policy outcome also beats a trap. The runner does not report whether the plugin also
-trapped; a host that discards runners after a crash should also discard them after `networkPolicy`.
-Policy outcomes and cancellation
-are never cached as capabilities.
+success. A policy outcome also beats a trap. A guest crash (a trap or an out-of-bounds memory
+access the call reports) still retires the plugin instance even when cancellation or a policy
+outcome decides that call's result: every later call, and every call already queued, throws the
+retained crash without running plugin code. Only a successful reload clears it; a failed reload
+keeps it. Policy outcomes and cancellation are never cached as capabilities.
 
 Loading a plugin while an export runs throws `ItoError.reloadDuringActiveExport`: use a fresh
 runner for overlapping work. A call queued before a successful reload throws
