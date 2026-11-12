@@ -54,6 +54,12 @@ public enum ItoError: LocalizedError, Equatable {
     /// hosts show their own text.
     case catalogContractViolation(function: String, violation: CatalogContractViolation)
 
+    /// The plugin's chapter editions broke the contract of `get_chapter_editions`, as the runner
+    /// found in a request or across the pages of a traversal, or as the plugin reported itself.
+    /// Chapter rules arrive as `catalogContractViolation`. `violation.rule` is for diagnostics;
+    /// the description never contains it.
+    case chapterEditionsViolation(function: String, violation: ChapterEditionsViolation)
+
     public var isCrash: Bool {
         switch self {
         case .wasmTrap, .memoryOutOfBounds: return true
@@ -79,6 +85,11 @@ public enum ItoError: LocalizedError, Equatable {
         case .catalogContractViolation(let function, _):
             // The rule code stays out of the text: it is for diagnostics, not for users.
             return "\(function): the plugin's response broke the data contract."
+        case .chapterEditionsViolation(let function, let violation):
+            // `request.*` rules are the caller's mistake, not the plugin's; the rule code stays out.
+            return violation.rule.rawValue.hasPrefix("request.")
+                ? "\(function): the request broke the chapter editions contract."
+                : "\(function): the plugin's response broke the data contract."
         case .wasmTrap(let reason):
             return "Wasm execution trapped: \(reason)"
         case .memoryOutOfBounds(let offset, let length, let memorySize):
@@ -111,6 +122,8 @@ public enum ItoError: LocalizedError, Equatable {
         case (.controlContractViolation(let lf, let lv), .controlContractViolation(let rf, let rv)):
             return lf == rf && lv == rv
         case (.catalogContractViolation(let lf, let lv), .catalogContractViolation(let rf, let rv)):
+            return lf == rf && lv == rv
+        case (.chapterEditionsViolation(let lf, let lv), .chapterEditionsViolation(let rf, let rv)):
             return lf == rf && lv == rv
         case (.wasmTrap(let l), .wasmTrap(let r)): return l == r
         case (
