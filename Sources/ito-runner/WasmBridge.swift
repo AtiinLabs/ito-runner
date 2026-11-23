@@ -91,16 +91,31 @@ public class WasmBridge {
         return .hostModuleError(domain: "webview", message: error.localizedDescription)
     }
 
+    /// Whether a plugin's network call may start: the call it runs for, or the transport failure
+    /// text it gets instead.
+    private enum NetAdmission {
+        case admitted(CallToken)
+        case refused(String)
+    }
+
+    /// Checked before any network work starts, by a single request and by a batch alike.
+    private func netAdmission() -> NetAdmission {
+        guard let token = activeCallToken else { return .refused(Self.missingContextText) }
+        if token.terminalOutcome != nil { return .refused(Self.admissionRefusedText) }
+        return .admitted(token)
+    }
+
     /// Runs a plugin's network request on the net module and waits for it. A failure, a
     /// cancelled call or a request past the watchdog deadline reaches the plugin as a 500
     /// response it handles like any server error, so its export finishes normally. A request past
     /// the deadline is also recorded on the call, which then reports `hostCallTimedOut(.net)`.
     func fetchForPlugin(_ request: NetRequest, label: String) -> NetResponse {
-        guard let token = activeCallToken else {
-            return Self.transportFailure(Self.missingContextText, label: label, includeBody: false)
-        }
-        if token.terminalOutcome != nil {
-            return Self.transportFailure(Self.admissionRefusedText, label: label, includeBody: false)
+        let token: CallToken
+        switch netAdmission() {
+        case .refused(let failure):
+            return Self.transportFailure(failure, label: label, includeBody: false)
+        case .admitted(let admitted):
+            token = admitted
         }
         let context = token.context
         let module = netModule
@@ -110,26 +125,181 @@ public class WasmBridge {
             }
             return try await module.fetch(request: request, context: context)
         }
+        Self.record(outcome, on: token)
+        return Self.netResponse(for: outcome, label: label)
+    }
+
+    /// Records on the call what an outcome decided: a policy refusal, or a watchdog deadline that
+    /// settled the host call. A result that arrived first won the cell and records nothing.
+    private static func record<Value>(_ outcome: HostCallOutcome<Value>, on token: CallToken) {
+        switch outcome {
+        case .failed(let error):
+            if let policy = policyOutcome(error) { token.recordPolicyOutcome(policy) }
+        case .timedOut:
+            token.recordHostCallTimeout(.net)
+        case .completed, .cancelled:
+            break
+        }
+    }
+
+    /// What the plugin sees for one request's outcome.
+    private static func netResponse(for outcome: HostCallOutcome<NetResponse>, label: String) -> NetResponse {
         let failure: String
         switch outcome {
         case .completed(let response):
-            return Self.withoutTransportErrorHeader(response)
+            return withoutTransportErrorHeader(response)
         case .failed(let error):
-            if let policy = Self.policyOutcome(error) {
-                token.recordPolicyOutcome(policy)
-                failure = Self.admissionRefusedText
-            } else {
-                failure = Self.guestFailureText(for: error)
-            }
+            failure = policyOutcome(error) != nil ? admissionRefusedText : guestFailureText(for: error)
         case .cancelled:
-            failure = Self.cancelledText
+            failure = cancelledText
         case .timedOut:
-            // Only a timeout that settled the host call reaches here: a result that arrived first
-            // won the cell and is returned above. Recorded before the export continues.
-            token.recordHostCallTimeout(.net)
-            failure = Self.timedOutText
+            failure = timedOutText
         }
-        return Self.transportFailure(failure, label: label, includeBody: true)
+        return transportFailure(failure, label: label, includeBody: true)
+    }
+
+    /// The most requests one `fetch_batch` call carries. Part of the import's contract with the
+    /// SDK, which chunks to this size.
+    static let maxBatch = 4
+    /// The most response body bytes one `fetch_batch` call returns, in total.
+    static let batchResponseBudget = 32 * 1024 * 1024
+    static let batchLabel = "net_fetch_batch"
+    /// Methods a batch sends. Requests in a batch run concurrently, so only ones a retry or a
+    /// reordering can't hurt are allowed.
+    private static let batchMethods: Set<String> = ["GET", "HEAD", "OPTIONS"]
+
+    static func isBatchMethod(_ method: String) -> Bool {
+        batchMethods.contains(method.uppercased())
+    }
+
+    /// Runs a plugin's safe requests concurrently on the net module under one wait and one
+    /// deadline, so the call's single cancel action cancels every one of them. Result `i` answers
+    /// request `i`. Each request ends as `fetchForPlugin` would end it, except that a policy
+    /// refusal is recorded by the request that met it as soon as it happens and cancels the rest,
+    /// which then report the refusal too.
+    func fetchBatchForPlugin(_ requests: [NetRequest]) -> [NetResponse] {
+        let token: CallToken
+        switch netAdmission() {
+        case .refused(let failure):
+            let response = Self.transportFailure(failure, label: Self.batchLabel, includeBody: false)
+            return Array(repeating: response, count: requests.count)
+        case .admitted(let admitted):
+            token = admitted
+        }
+        let sent = requests.filter { Self.isBatchMethod($0.method) }
+        guard !sent.isEmpty else {
+            return Self.batchResponses(for: requests, outcomes: [])
+        }
+        let context = token.context
+        let module = netModule
+        let outcome = waitForHostWork(token: token, timeout: timeouts.net) {
+            () async -> [HostCallOutcome<NetResponse>] in
+            guard let module else {
+                let missing = ItoError.hostModuleError(domain: "net", message: "NetModule not provided")
+                return Array(repeating: .failed(missing), count: sent.count)
+            }
+            return await withTaskGroup(of: (Int, HostCallOutcome<NetResponse>).self) { group in
+                for (index, request) in sent.enumerated() {
+                    group.addTask {
+                        do {
+                            return (index, .completed(try await module.fetch(request: request, context: context)))
+                        } catch is CancellationError {
+                            return (index, .cancelled)
+                        } catch {
+                            if let policy = Self.policyOutcome(error) { token.recordPolicyOutcome(policy) }
+                            return (index, .failed(error))
+                        }
+                    }
+                }
+                var results = [HostCallOutcome<NetResponse>?](repeating: nil, count: sent.count)
+                for await (index, result) in group {
+                    results[index] = result
+                    if case .failed(let error) = result, Self.policyOutcome(error) != nil {
+                        group.cancelAll()
+                    }
+                }
+                return results.map { $0 ?? .cancelled }
+            }
+        }
+        Self.record(outcome, on: token)
+        let outcomes: [HostCallOutcome<NetResponse>]
+        switch outcome {
+        case .completed(let results): outcomes = results
+        case .failed(let error): outcomes = Array(repeating: .failed(error), count: sent.count)
+        case .cancelled: outcomes = Array(repeating: .cancelled, count: sent.count)
+        case .timedOut: outcomes = Array(repeating: .timedOut, count: sent.count)
+        }
+        return Self.batchResponses(for: requests, outcomes: outcomes)
+    }
+
+    /// The plugin's answers to a batch. `outcomes` are the outcomes of the requests that were
+    /// sent, in order; the rest were refused for their method and get a transport failure. After
+    /// a policy refusal every request that didn't complete reports it, however it ended. Bodies
+    /// are admitted in request order up to `budget`: a response that would pass it becomes a
+    /// transport failure the SDK retries on its own.
+    static func batchResponses(
+        for requests: [NetRequest], outcomes: [HostCallOutcome<NetResponse>],
+        budget: Int = batchResponseBudget
+    ) -> [NetResponse] {
+        let refused = outcomes.contains { outcome in
+            if case .failed(let error) = outcome { return policyOutcome(error) != nil }
+            return false
+        }
+        var remaining = outcomes.makeIterator()
+        var admitted = 0
+        return requests.map { request in
+            guard isBatchMethod(request.method), let outcome = remaining.next() else {
+                return transportFailure(unsafeMethodText, label: batchLabel, includeBody: true)
+            }
+            let response: NetResponse
+            if refused, !outcome.isCompleted {
+                response = transportFailure(admissionRefusedText, label: batchLabel, includeBody: true)
+            } else {
+                response = netResponse(for: outcome, label: batchLabel)
+            }
+            guard response.body.count <= budget - admitted else {
+                return transportFailure(batchBudgetText, label: batchLabel, includeBody: true)
+            }
+            admitted += response.body.count
+            return response
+        }
+    }
+
+    /// The length a net import returns for `count` payload bytes, or nil when it doesn't fit the
+    /// positive `Int32` range the plugin reads it in.
+    static func returnedLength(count: Int) -> UInt32? {
+        guard count > 0, count <= Int(Int32.max) else { return nil }
+        return UInt32(count)
+    }
+
+    /// Encodes one response for `fetch_read` and returns the length to give the plugin. A response
+    /// too large to report becomes a transport failure instead.
+    private func publish(_ response: NetResponse, label: String) throws -> UInt32 {
+        var bytes = try postcardEncoder.encode(response)
+        var length = Self.returnedLength(count: bytes.count)
+        if length == nil {
+            let failure = Self.transportFailure(Self.responseTooLargeText, label: label, includeBody: true)
+            bytes = try postcardEncoder.encode(failure)
+            length = Self.returnedLength(count: bytes.count)
+        }
+        guard let length else { throw ItoError.wasmTrap("Failed to serialize NetResponse: empty payload") }
+        pendingNetResponseBytes = bytes
+        return length
+    }
+
+    /// Encodes a batch's responses for `fetch_read` and returns the length to give the plugin. A
+    /// batch too large to report is answered with the budget failure for every request.
+    private func publish(batch responses: [NetResponse]) throws -> UInt32 {
+        var bytes = try postcardEncoder.encode(responses)
+        var length = Self.returnedLength(count: bytes.count)
+        if length == nil {
+            let failure = Self.transportFailure(Self.batchBudgetText, label: Self.batchLabel, includeBody: true)
+            bytes = try postcardEncoder.encode(Array(repeating: failure, count: responses.count))
+            length = Self.returnedLength(count: bytes.count)
+        }
+        guard let length else { throw ItoError.wasmTrap("Failed to serialize NetResponse: empty payload") }
+        pendingNetResponseBytes = bytes
+        return length
     }
 
     // Everything below reaches guest memory. Fixed ASCII English only: never localized, never
@@ -139,6 +309,10 @@ public class WasmBridge {
     static let genericFailureText = "Host network request failed."
     static let cancelledText = "The request was cancelled."
     static let timedOutText = "The request timed out."
+    static let unsafeMethodText = "Only GET, HEAD and OPTIONS requests can be batched."
+    /// The reason the SDK looks for to retry a batch element on its own. Never change it.
+    static let batchBudgetText = "batch response budget exceeded"
+    static let responseTooLargeText = "The response was too large."
 
     /// Specific guest texts for the `URLError` codes a plugin can usefully distinguish.
     static let urlErrorTexts: [URLError.Code: String] = [
@@ -283,9 +457,7 @@ public class WasmBridge {
             }
             let response = self.fetchForPlugin(request, label: "net_fetch")
             do {
-                let responseBytes = try self.postcardEncoder.encode(response)
-                self.pendingNetResponseBytes = responseBytes
-                return [.i32(UInt32(responseBytes.count))]
+                return [.i32(try self.publish(response, label: "net_fetch"))]
             } catch {
                 throw ItoError.wasmTrap("Failed to serialize NetResponse: \(error)")
             }
@@ -315,9 +487,40 @@ public class WasmBridge {
             }
             let response = self.fetchForPlugin(request, label: "net_fetch_v2")
             do {
-                let responseBytes = try self.postcardEncoder.encode(response)
-                self.pendingNetResponseBytes = responseBytes
-                return [.i32(UInt32(responseBytes.count))]
+                return [.i32(try self.publish(response, label: "net_fetch_v2"))]
+            } catch {
+                throw ItoError.wasmTrap("Failed to serialize NetResponse: \(error)")
+            }
+        }
+
+        // Up to `maxBatch` safe requests run concurrently. The plugin reads the postcard
+        // `Vec<NetResponse>` with `fetch_read`, as for `fetch_v2`; result `i` answers request `i`.
+        let netFetchBatch = Function(store: store, parameters: [.i32, .i32], results: [.i32]) {
+            [weak self] caller, args in
+            guard let self = self else { return [] }
+            let requestPtr = args[0].i32
+            let requestLen = args[1].i32
+
+            guard let memory = caller.instance?.exports[memory: "memory"] else {
+                throw ItoError.wasmTrap("Plugin must export linear memory")
+            }
+
+            let requestBytes = memory.withUnsafeMutableBufferPointer(
+                offset: UInt(requestPtr), count: Int(requestLen)
+            ) { buffer in Array(buffer) }
+
+            let requests: [NetRequest]
+            do {
+                requests = try self.postcardDecoder.decode([NetRequest].self, from: requestBytes)
+            } catch {
+                throw ItoError.wasmTrap("Failed to decode NetRequest batch: \(error)")
+            }
+            guard (1...Self.maxBatch).contains(requests.count) else {
+                throw ItoError.wasmTrap("fetch_batch takes 1 to \(Self.maxBatch) requests, got \(requests.count)")
+            }
+            let responses = self.fetchBatchForPlugin(requests)
+            do {
+                return [.i32(try self.publish(batch: responses))]
             } catch {
                 throw ItoError.wasmTrap("Failed to serialize NetResponse: \(error)")
             }
@@ -797,6 +1000,7 @@ public class WasmBridge {
             "ito:core/net": [
                 "fetch": netFetch,
                 "fetch_v2": netFetchV2,
+                "fetch_batch": netFetchBatch,
                 "fetch_read": netFetchRead
             ],
             "ito:core/html": [
