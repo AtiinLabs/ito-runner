@@ -117,7 +117,14 @@ enum HostCallOutcome<Value> {
     case failed(any Error)
     case cancelled
     case timedOut
+
+    var isCompleted: Bool {
+        if case .completed = self { return true }
+        return false
+    }
 }
+
+extension HostCallOutcome: Sendable where Value: Sendable {}
 
 /// Where the host work's outcome is published once. The first outcome wins and wakes the
 /// waiting thread; later ones (a result arriving after a timeout) are dropped.
