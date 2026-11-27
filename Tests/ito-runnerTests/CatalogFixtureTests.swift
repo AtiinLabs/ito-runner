@@ -121,10 +121,11 @@ struct CatalogFixtureTests {
         #expect(CatalogLimits.responseBytes == limits.max_response_bytes)
     }
 
-    /// The plugin reports a violation by one of these codes and nothing else.
+    /// The plugin reports a violation by one of these codes and nothing else: the chapter catalog's,
+    /// then the codes `home-v2.json` adds.
     @Test func everyListedCodeIsARuleAndEveryRuleButTheCatchAllIsListed() {
         let rules = CatalogContractViolation.Rule.allCases.filter { $0 != .unrecognized }.map(\.rawValue)
-        #expect(rules == fixture.codes)
+        #expect(rules == fixture.codes + HomeFixture.shared.codes)
     }
 
     @Test func everyCaseHasTheVerdictTheFixtureGives() {

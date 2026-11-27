@@ -12,15 +12,16 @@ func catalogHex(_ bytes: [UInt8]) -> String { bytes.map { String(format: "\\%02x
 
 func catalogPacked(_ pointer: Int, _ length: Int) -> Int64 { Int64(pointer) << 32 | Int64(length) }
 
-/// A plugin of 16 pages of memory that serves every kind and answers each export in `exports`.
+/// A plugin of 16 pages of memory that serves `kinds` (a mask by `MediaKind.wireValue`; every kind
+/// by default) and answers each export in `exports`.
 /// `(func $capture (param pointer length))` copies an argument to `catalogCaptureOffset`, and
 /// `responses` places fixed bytes in memory, by address, for the exports to return.
-func catalogPlugin(exports: String, responses: [(offset: Int, bytes: [UInt8])] = []) throws -> [UInt8] {
+func catalogPlugin(exports: String, kinds: Int = 0b111, responses: [(offset: Int, bytes: [UInt8])] = []) throws -> [UInt8] {
     try wat2wasm("""
         (module
           (memory (export "memory") 16)
           (global $next (mut i32) (i32.const 400000))
-          \(abi3Prelude(kinds: 0b111))
+          \(abi3Prelude(kinds: kinds))
           (func (export "alloc") (param $size i32) (result i32) (local $pointer i32)
             global.get $next local.set $pointer
             global.get $next local.get $size i32.add global.set $next
