@@ -1,0 +1,10 @@
+home-v2.json is a byte-identical copy of fixtures/home-v2.json at
+ito-rs@b19b6de99783767253a6107ec32320e238bbb0f3 (AtiinLabs/ito-rs #21, branch feat/featured-home,
+"Add a featured home component behind get_home_v2").
+
+sha256  3644aeaaa8920cbc9a62304daacace60a36a246cdf7e6829ae8c57ebc889654a
+bytes   48384
+
+The file is JSON, which has no room for a header, so its origin is recorded here. Do not edit the
+fixture in place: a change to the contract lands in ito-rs first and the file is copied again with
+this note updated. HomeFixtureTests checks the digest above.

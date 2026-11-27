@@ -665,13 +665,41 @@ public actor ItoRunner {
 
     // MARK: - Core Execution API
 
-    /// Executes `get_home()`
+    private static let homeV2Export = "get_home_v2"
+
+    /// Runs the home export and names the one that answered. `get_home_v2` is preferred when the
+    /// plugin exports it: it takes the host's `supportedHomeFeatures` and returns the layout with
+    /// what the host lacks already lowered. Only a reported `Unsupported` falls back to
+    /// `get_home`. A wrong signature or any other failure is reported and never retried there, so
+    /// a plugin's bug can't hide behind the older export.
+    private func callHome() throws -> (home: HomeLayout, function: String) {
+        let name = Self.homeV2Export
+        guard let export = instance?.exports[name] else {
+            return (try callDecoding(HomeLayout.self, "get_home"), "get_home")
+        }
+        guard case .function(let function) = export,
+              function.type.parameters == [.i32], function.type.results == [.i64] else {
+            throw ItoError.controlContractViolation(function: name, violation: .init(.signature))
+        }
+        let features = Int32(bitPattern: Self.supportedHomeFeatures.rawValue)
+        if let bytes = try callPacked(name, [.int(features)]) {
+            return (try Self.decodeCatalog(HomeLayout.self, from: bytes, function: name), name)
+        }
+        let reported = try reportedFailure()
+        if let reported {
+            guard isUnsupported(reported) else { throw itoError(of: name, reported: reported) }
+            return (try callDecoding(HomeLayout.self, "get_home"), "get_home")
+        }
+        throw ItoError.pluginFailed(function: name, reason: nil, category: .other)
+    }
+
+    /// Executes `get_home_v2(features)` when the plugin exports it, else `get_home()`.
     public func getHome(context: NetworkOperationContext) async throws -> HomeLayout {
         let kinds = supportedKinds
         return try await performSerialized(context: context) {
-            let home = try self.callDecoding(HomeLayout.self, "get_home")
-            try Self.requireServed(home.components.flatMap(\.value.entries), by: kinds, in: "get_home")
-            try Self.reportingViolations(of: "get_home") { try CatalogValidation.home(home) }
+            let (home, function) = try self.callHome()
+            try Self.requireServed(home.components.flatMap(\.value.entries), by: kinds, in: function)
+            try Self.reportingViolations(of: function) { try CatalogValidation.home(home) }
             return home
         }
     }
@@ -1050,6 +1078,8 @@ extension HomeComponentValue {
             return items.map { .novel($0.novel) }
         case .mediaScroller(let entries, _), .mediaList(_, _, let entries, _), .mediaBigScroller(let entries, _):
             return entries
+        case .featured(let component):
+            return component.items.map(\.entry)
         case .filters, .links:
             return []
         }

@@ -870,6 +870,8 @@ public enum HomeComponentValue: Codable, Sendable, PostcardEnumMarker {
     case mediaScroller([MediaEntry], Listing?)
     case mediaList(Bool, Int32?, [MediaEntry], Listing?)
     case mediaBigScroller([MediaEntry], Float32?)
+    /// A hero carousel. Reaches the host only through `get_home_v2`; see `HomeFeatures`.
+    case featured(FeaturedComponent)
 
     enum CodingKeys: Int, CodingKey, PostcardEnumKeys {
         case scroller = 0
@@ -889,6 +891,7 @@ public enum HomeComponentValue: Codable, Sendable, PostcardEnumMarker {
         case mediaScroller = 14
         case mediaList = 15
         case mediaBigScroller = 16
+        case featured = 17
     }
 }
 
@@ -909,5 +912,109 @@ public struct HomeLayout: Codable, Sendable {
 
     public init(components: [HomeComponent]) {
         self.components = components
+    }
+}
+
+/// The home features this runner can show. `getHome` passes them to a plugin's optional
+/// `get_home_v2` export, which lowers what the host lacks.
+public struct HomeFeatures: OptionSet, Sendable {
+    public let rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    /// `HomeComponentValue.featured`.
+    public static let featured = HomeFeatures(rawValue: 1 << 0)
+}
+
+extension ItoRunner {
+    /// The home features this runner shows, as `getHome` reports them to a plugin.
+    public static let supportedHomeFeatures: HomeFeatures = [.featured]
+}
+
+/// A hero carousel of artwork-led items. Its layout is its fields in declaration order, and the
+/// component's title and subtitle stay on `HomeComponent`.
+public struct FeaturedComponent: Codable, Sendable {
+    /// 1 to 20 items, in display order.
+    public var items: [FeaturedItem]
+    /// Seconds between pages, 2 to 60. Nil means the user pages.
+    public var autoAdvance: Float32?
+    /// The target of the "See all" link.
+    public var listing: Listing?
+
+    public init(items: [FeaturedItem], autoAdvance: Float32? = nil, listing: Listing? = nil) {
+        self.items = items
+        self.autoAdvance = autoAdvance
+        self.listing = listing
+    }
+}
+
+/// One page of a featured component. `entry` is what the user opens, passed on unchanged; every
+/// other field decorates the page.
+public struct FeaturedItem: Codable, Sendable {
+    public var entry: MediaEntry
+    /// A wide backdrop, about 16:9, distinct from the entry's 2:3 cover.
+    public var banner: String?
+    /// Transparent title art.
+    public var logo: String?
+    public var tagline: String?
+    /// A short display text; hosts show the entry's description when it is absent.
+    public var summary: String?
+    public var badge: FeaturedBadge?
+    /// At most 6. Status is not a chip: hosts read the entry's status.
+    public var chips: [FeaturedChip]
+    /// `0xRRGGBB`, a tint hint only.
+    public var accent: UInt32?
+    /// `0` details, `1` start reading or watching. Raw, so a value a later SDK adds reads as
+    /// details instead of failing the home.
+    public var action: Int32
+
+    public init(
+        entry: MediaEntry, banner: String? = nil, logo: String? = nil, tagline: String? = nil,
+        summary: String? = nil, badge: FeaturedBadge? = nil, chips: [FeaturedChip] = [],
+        accent: UInt32? = nil, action: Int32 = 0
+    ) {
+        self.entry = entry
+        self.banner = banner
+        self.logo = logo
+        self.tagline = tagline
+        self.summary = summary
+        self.badge = badge
+        self.chips = chips
+        self.accent = accent
+        self.action = action
+    }
+}
+
+/// A badge over an item. `kind` is raw, so a value a later SDK adds is not a decoding failure: a
+/// host shows the label of a kind it doesn't know, or drops the badge without one.
+public struct FeaturedBadge: Codable, Sendable {
+    /// `0` custom (needs a label), `1` new, `2` trending (uses `rank`), `3` popular, `4` updated.
+    public var kind: Int32
+    /// 1 to 999.
+    public var rank: Int32?
+    /// Plugin text, shown verbatim.
+    public var label: String?
+
+    public init(kind: Int32, rank: Int32? = nil, label: String? = nil) {
+        self.kind = kind
+        self.rank = rank
+        self.label = label
+    }
+}
+
+/// A structured fact about an item. `kind` is raw, so a value a later SDK adds is not a decoding
+/// failure: a host shows the text of a kind it doesn't know, or drops the chip without any.
+public struct FeaturedChip: Codable, Sendable {
+    /// `0` text, `1` year, `2` rating (0 to 10), `3` units, `4` genre, `5` format.
+    public var kind: Int32
+    public var number: Double?
+    public var text: String?
+
+    public init(kind: Int32, number: Double? = nil, text: String? = nil) {
+        self.kind = kind
+        self.number = number
+        self.text = text
     }
 }

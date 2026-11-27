@@ -23,6 +23,31 @@ public enum CatalogLimits {
     public static let maxAbsDate = 1e11
     /// Encoded size of a `get_media_update` or `handle_url` response.
     public static let responseBytes = 16 * 1024 * 1024
+
+    // MARK: Featured home components
+
+    /// Items in one featured component.
+    public static let featuredItems = 20
+    /// Chips on one featured item.
+    public static let featuredChips = 6
+    public static let taglineBytes = 256
+    public static let summaryBytes = 2_048
+    public static let badgeLabelBytes = 64
+    public static let chipTextBytes = 64
+    /// Largest rank a badge shows; ranks start at 1.
+    public static let maxBadgeRank: Int32 = 999
+    /// Bounds of a featured component's `autoAdvance`, in seconds.
+    public static let minAutoAdvance: Float32 = 2
+    public static let maxAutoAdvance: Float32 = 60
+    /// Largest accent colour, `0xRRGGBB`.
+    public static let maxAccent: UInt32 = 0xFF_FFFF
+    /// Years a year chip may show.
+    public static let minChipYear = 1_800.0
+    public static let maxChipYear = 2_200.0
+    /// Largest value of a rating chip on its normalized scale; the smallest is 0.
+    public static let maxChipRating = 10.0
+    /// Largest count a units chip may show.
+    public static let maxChipUnits = 1_000_000.0
 }
 
 /// A broken chapter catalog rule. It names the rule only, never the offending value, and its
@@ -47,6 +72,13 @@ public struct CatalogContractViolation: Error, Equatable, Sendable, CustomString
         case responseTooLarge = "response.too_large"
         /// A chapter kind this runner doesn't know. Only hosts report it.
         case enumUnknown = "enum.unknown"
+        /// A featured component has no items, or more than the limit.
+        case countFeatured = "count.featured"
+        case countChips = "count.chips"
+        case lengthText = "length.text"
+        /// A banner or logo that isn't an `http` or `https` URL.
+        case urlScheme = "url.scheme"
+        case colorRange = "color.range"
         /// A plugin reported a violation under a code this runner doesn't list. The code is
         /// dropped, since it is plugin text.
         case unrecognized = "contract.unrecognized"
@@ -164,6 +196,70 @@ enum CatalogValidation {
         for item in entries { try entry(item) }
     }
 
+    /// Whether `url` begins with `http://` or `https://`, compared without regard to ASCII case:
+    /// the only schemes hosts fetch artwork over directly.
+    private static func isWebURL(_ url: String) -> Bool {
+        ["http://", "https://"].contains { scheme in
+            url.utf8.prefix(scheme.utf8.count).elementsEqual(scheme.utf8) { found, expected in
+                (found >= 0x41 && found <= 0x5A ? found + 0x20 : found) == expected
+            }
+        }
+    }
+
+    private struct FeaturedIdentity: Hashable {
+        let kind: MediaKind
+        let key: ExactBytes
+    }
+
+    /// A featured component: its item count, `autoAdvance`, each item in order, then duplicate
+    /// `(kind, key)` pairs.
+    static func featured(_ component: FeaturedComponent) throws {
+        try require((1...CatalogLimits.featuredItems).contains(component.items.count), .countFeatured)
+        if let seconds = component.autoAdvance {
+            try require((CatalogLimits.minAutoAdvance...CatalogLimits.maxAutoAdvance).contains(seconds), .numberRange)
+        }
+        for item in component.items { try featuredItem(item) }
+        var identities = Set<FeaturedIdentity>(minimumCapacity: component.items.count)
+        for item in component.items {
+            let identity = FeaturedIdentity(kind: item.entry.kind, key: ExactBytes(item.entry.key))
+            try require(identities.insert(identity).inserted, .duplicateKey)
+        }
+    }
+
+    /// One featured item: its entry, both artwork lengths and then both schemes, tagline, summary,
+    /// badge label and rank, chip count, each chip, accent.
+    private static func featuredItem(_ item: FeaturedItem) throws {
+        try entry(item.entry)
+        let artwork = [item.banner, item.logo]
+        for url in artwork { try bytes(url, 1...CatalogLimits.urlBytes, .lengthURL) }
+        for url in artwork {
+            if let url { try require(isWebURL(url), .urlScheme) }
+        }
+        try bytes(item.tagline, 1...CatalogLimits.taglineBytes, .lengthText)
+        try bytes(item.summary, 1...CatalogLimits.summaryBytes, .lengthText)
+        if let badge = item.badge {
+            try bytes(badge.label, 1...CatalogLimits.badgeLabelBytes, .lengthText)
+            if let rank = badge.rank { try require((1...CatalogLimits.maxBadgeRank).contains(rank), .numberRange) }
+        }
+        try require(item.chips.count <= CatalogLimits.featuredChips, .countChips)
+        for chip in item.chips { try featuredChip(chip) }
+        if let accent = item.accent { try require(accent <= CatalogLimits.maxAccent, .colorRange) }
+    }
+
+    /// A chip's text, then its number against the range of its kind. A kind this runner doesn't
+    /// know gets the length check only.
+    private static func featuredChip(_ chip: FeaturedChip) throws {
+        try bytes(chip.text, 1...CatalogLimits.chipTextBytes, .lengthText)
+        guard let number = chip.number else { return }
+        let isInteger = number == number.rounded(.towardZero)
+        switch chip.kind {
+        case 1: try require(isInteger && (CatalogLimits.minChipYear...CatalogLimits.maxChipYear).contains(number), .numberRange)
+        case 2: try require((0...CatalogLimits.maxChipRating).contains(number), .numberRange)
+        case 3: try require(isInteger && (0...CatalogLimits.maxChipUnits).contains(number), .numberRange)
+        default: break
+        }
+    }
+
     static func link(_ link: LinkValue) throws {
         switch link {
         case .manga(let manga): try Self.manga(manga)
@@ -192,6 +288,8 @@ enum CatalogValidation {
                 }
             case .mediaScroller(let entries, _), .mediaList(_, _, let entries, _), .mediaBigScroller(let entries, _):
                 try Self.entries(entries)
+            case .featured(let component):
+                try featured(component)
             case .animeScroller, .animeList, .animeEpisodeList, .animeBigScroller, .filters, .links:
                 break
             }
